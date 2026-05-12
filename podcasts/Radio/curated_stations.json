@@ -4,7 +4,7 @@
       "id": "kcrw",
       "name": "KCRW",
       "description": "Music and NPR news from Santa Monica",
-      "streamUrl": "https://streams.kcrw.com/e24_mp3",
+      "streamUrl": "https://streams.kcrw.com/e24_aac",
       "tracklistUrl": "https://tracklist-api.kcrw.com/Music/all/1?page_size=10",
       "donateUrl": "https://join.kcrw.com",
       "homepageUrl": "https://www.kcrw.com",
