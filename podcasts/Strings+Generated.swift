@@ -884,6 +884,8 @@ internal enum L10n {
   internal static var discoverTrending: String { return L10n.tr("Localizable", "discover_trending", fallback: "Trending") }
   /// Informative label letting users know when the Discover page has failed to load due to a network error.
   internal static var discoverUnableToLoad: String { return L10n.tr("Localizable", "discover_unable_to_load", fallback: "Unable to load Discover") }
+  /// Placeholder for donation amount input
+  internal static var donationPlaceholder: String { return L10n.tr("Localizable", "donation_placeholder", fallback: "$0.00") }
   /// A common string used throughout the app. Confirmation text.
   internal static var done: String { return L10n.tr("Localizable", "done", fallback: "Done") }
   /// A common string used throughout the app. Prompt to download the selected item(s).
@@ -1228,6 +1230,14 @@ internal enum L10n {
   internal static var error: String { return L10n.tr("Localizable", "error", fallback: "Error") }
   /// A common string used throughout the app. Generic title informing the user of an Error. General error message used when the app is unable to locate the podcast that was selected. This usually comes from a sharing or import feature.
   internal static var errorGeneralPodcastNotFound: String { return L10n.tr("Localizable", "error_general_podcast_not_found", fallback: "Unable to find podcast. Please contact the podcast author.") }
+  /// Estimated cost format, %1$@ is the formatted dollar amount
+  internal static func estCostFormat(_ p1: Any) -> String {
+    return L10n.tr("Localizable", "est_cost_format", String(describing: p1), fallback: "Est. cost to station: $%1$@")
+  }
+  /// Estimated total cost format, %1$@ is the formatted dollar amount
+  internal static func estimatedTotalCostFormat(_ p1: Any) -> String {
+    return L10n.tr("Localizable", "estimated_total_cost_format", String(describing: p1), fallback: "Est. total cost: $%1$@")
+  }
   /// Title of an option to export the users data
   internal static var exportDatabase: String { return L10n.tr("Localizable", "export_database", fallback: "Export Database") }
   /// Describes how the process to export podcasts from Pocket Casts works.
@@ -3037,12 +3047,16 @@ internal enum L10n {
   internal static var podcastsList: String { return L10n.tr("Localizable", "podcasts_list", fallback: "List") }
   /// A common string used throughout the app. Refers to Podcasts in the plural form as well as the Podcasts screen.
   internal static var podcastsPlural: String { return L10n.tr("Localizable", "podcasts_plural", fallback: "Podcasts") }
+  /// Section header for podcasts in Usage & Donations
+  internal static var podcastsSection: String { return L10n.tr("Localizable", "podcasts_section", fallback: "PODCASTS") }
   /// Prompt to open the menu to share your podcasts list.
   internal static var podcastsShare: String { return L10n.tr("Localizable", "podcasts_share", fallback: "Share Podcasts") }
   /// Presents the podcasts with small podcast artwork tiles.
   internal static var podcastsSmallGrid: String { return L10n.tr("Localizable", "podcasts_small_grid", fallback: "Small Grid") }
   /// Prompt to open the menu to allow the user to sort their podcasts.
   internal static var podcastsSort: String { return L10n.tr("Localizable", "podcasts_sort", fallback: "Sort Podcasts") }
+  /// Label for podcasts total in summary
+  internal static var podcastsTotal: String { return L10n.tr("Localizable", "podcasts_total", fallback: "Podcasts:") }
   /// Common word to denote a preview of something is being shown
   internal static var preview: String { return L10n.tr("Localizable", "preview", fallback: "Preview") }
   /// Pricing terms explaining that the user will have a discount in the first period then will pay full price, %1$@ is the full price, %2$@ the discount duration, %3$@ the date the user will pay full price
@@ -3119,6 +3133,14 @@ internal enum L10n {
   internal static func queueTotalTimeRemaining(_ p1: Any) -> String {
     return L10n.tr("Localizable", "queue_total_time_remaining", String(describing: p1), fallback: "%1$@ total time remaining")
   }
+  /// Radio listen time format, %1$@ is the formatted duration
+  internal static func radioListenTimeFormat(_ p1: Any) -> String {
+    return L10n.tr("Localizable", "radio_listen_time_format", String(describing: p1), fallback: "%1$@ listened")
+  }
+  /// Section header for radio stations in Usage & Donations
+  internal static var radioStationsSection: String { return L10n.tr("Localizable", "radio_stations_section", fallback: "RADIO STATIONS") }
+  /// Label for radio total in summary
+  internal static var radioTotal: String { return L10n.tr("Localizable", "radio_total", fallback: "Radio:") }
   /// Title of a button that takes the user to a screen to rate a podcast
   internal static var rate: String { return L10n.tr("Localizable", "rate", fallback: "Rate") }
   /// Title of a button that allows the user to rate the app
@@ -4157,6 +4179,14 @@ internal enum L10n {
   internal static var suggestedFoldersTitle: String { return L10n.tr("Localizable", "suggested_folders_title", fallback: "Smart Folders") }
   /// Suggested Folders button title to accept suggested folders
   internal static var suggestedFoldersUseSuggestedFolders: String { return L10n.tr("Localizable", "suggested_folders_use_suggested_folders", fallback: "Use these folders") }
+  /// Support button title, %1$@ is the station name
+  internal static func supportButtonTitle(_ p1: Any) -> String {
+    return L10n.tr("Localizable", "support_button_title", String(describing: p1), fallback: "Support %1$@ ↗")
+  }
+  /// Support ratio format, %1$@ is the ratio number, %2$@ is the emoji
+  internal static func supportRatioFormat(_ p1: Any, _ p2: Any) -> String {
+    return L10n.tr("Localizable", "support_ratio_format", String(describing: p1), String(describing: p2), fallback: "Your support ratio: %1$@x %2$@")
+  }
   /// Description of an alert shown to the user
   internal static var supportWatchHelpMessage: String { return L10n.tr("Localizable", "support_watch_help_message", fallback: "If you're having issues with the Pocket Casts Watch app we can send your wearable logs to better assist you. In order to do so, please open Pocket Casts on your Watch.") }
   /// Button that the user can press if they opened the Watch app
@@ -4223,6 +4253,12 @@ internal enum L10n {
   internal static var today: String { return L10n.tr("Localizable", "today", fallback: "Today") }
   /// A common string used throughout the app. Title option to place the item at the top of the queue.
   internal static var top: String { return L10n.tr("Localizable", "top", fallback: "Top") }
+  /// Total donated format, %1$@ is the formatted dollar amount
+  internal static func totalDonatedFormat(_ p1: Any) -> String {
+    return L10n.tr("Localizable", "total_donated_format", String(describing: p1), fallback: "Total donated: $%1$@")
+  }
+  /// Section header for totals in Usage & Donations
+  internal static var totalSection: String { return L10n.tr("Localizable", "total_section", fallback: "TOTAL") }
   /// A common string used throughout the app. Often refers to the Transcript tab in the player.
   internal static var transcript: String { return L10n.tr("Localizable", "transcript", fallback: "Transcript") }
   /// Transcript error message when transcript is empty
@@ -4469,6 +4505,8 @@ internal enum L10n {
   internal static var uploadSortLongestToShortest: String { return L10n.tr("Localizable", "upload_sort_longest_to_shortest", fallback: "Longest to shortest") }
   /// A duration (shortest to longest) sort option for uploaded files.
   internal static var uploadSortShortestToLongest: String { return L10n.tr("Localizable", "upload_sort_shortest_to_longest", fallback: "Shortest to longest") }
+  /// Title for Usage & Donations screen
+  internal static var usageDonationsTitle: String { return L10n.tr("Localizable", "usage_donations_title", fallback: "Usage & Donations") }
   /// Title displayed above the user's subscribed podcasts list when no podcast is selected.
   internal static var userEpisodesSearchPodcastsTitle: String { return L10n.tr("Localizable", "user_episodes_search_podcasts_title", fallback: "Your Podcasts") }
   /// An option to say "no" when when asked if the user enjoys the app.

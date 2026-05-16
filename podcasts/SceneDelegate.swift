@@ -13,6 +13,8 @@ class SceneDelegate: UIResponder, UISceneDelegate, UIWindowSceneDelegate {
 
         window.makeKeyAndVisible()
 
+        _ = ListenTimeTracker.shared
+
         if let shortcutItem = connectionOptions.shortcutItem {
             appDelegate()?.handleShortcutItem(shortcutItem)
         }

@@ -337,6 +337,9 @@
 		4D11D3CA2FAFB7780051B62B /* FavoritesViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D11D3C92FAFB7780051B62B /* FavoritesViewController.swift */; };
 		4D11D3CC2FAFB7780051B62B /* RadioBrowserAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D11D3CB2FAFB7780051B62B /* RadioBrowserAPI.swift */; };
 		4D11D3CE2FAFB7780051B62B /* BrowseViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D11D3CD2FAFB7780051B62B /* BrowseViewController.swift */; };
+		4D11D3D32FAFB7780051B62B /* ListenTimeTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D11D3D02FAFB7780051B62B /* ListenTimeTracker.swift */; };
+		4D11D3D42FAFB7780051B62B /* RadioUsageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D11D3D12FAFB7780051B62B /* RadioUsageManager.swift */; };
+		4D11D3D52FAFB7780051B62B /* UsageDonationsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D11D3D22FAFB7780051B62B /* UsageDonationsViewController.swift */; };
 		81C8677C17743B85BF586B0B /* VoiceBoostN.c in Sources */ = {isa = PBXBuildFile; fileRef = 14DD11DB5830A48ACE6928B2 /* VoiceBoostN.c */; };
 		8B0845932A66C86C00742C2F /* Share Extension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 2F90990B2A4F88B00044FC55 /* Share Extension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		8B087FC929DC976F0027EAE5 /* PodcastImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B087FC829DC976F0027EAE5 /* PodcastImage.swift */; };
@@ -1944,6 +1947,9 @@
 		4D11D3C92FAFB7780051B62B /* FavoritesViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesViewController.swift; sourceTree = "<group>"; };
 		4D11D3CB2FAFB7780051B62B /* RadioBrowserAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadioBrowserAPI.swift; sourceTree = "<group>"; };
 		4D11D3CD2FAFB7780051B62B /* BrowseViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowseViewController.swift; sourceTree = "<group>"; };
+		4D11D3D02FAFB7780051B62B /* ListenTimeTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListenTimeTracker.swift; sourceTree = "<group>"; };
+		4D11D3D12FAFB7780051B62B /* RadioUsageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadioUsageManager.swift; sourceTree = "<group>"; };
+		4D11D3D22FAFB7780051B62B /* UsageDonationsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageDonationsViewController.swift; sourceTree = "<group>"; };
 		871975870906424F8C3C70B0 /* Modules */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = Modules; sourceTree = SOURCE_ROOT; };
 		8B087FC829DC976F0027EAE5 /* PodcastImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PodcastImage.swift; sourceTree = "<group>"; };
 		8B10E78528D908A900702C54 /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
@@ -3629,6 +3635,9 @@
 				4D11D3C92FAFB7780051B62B /* FavoritesViewController.swift */,
 				4D11D3CB2FAFB7780051B62B /* RadioBrowserAPI.swift */,
 				4D11D3CD2FAFB7780051B62B /* BrowseViewController.swift */,
+				4D11D3D02FAFB7780051B62B /* ListenTimeTracker.swift */,
+				4D11D3D12FAFB7780051B62B /* RadioUsageManager.swift */,
+				4D11D3D22FAFB7780051B62B /* UsageDonationsViewController.swift */,
 				4D11D3C32FAFB7780051B62B /* curated_stations.json */,
 			);
 			path = podcasts/Radio;
@@ -7133,6 +7142,9 @@
 				4D11D3CA2FAFB7780051B62B /* FavoritesViewController.swift in Sources */,
 				4D11D3CC2FAFB7780051B62B /* RadioBrowserAPI.swift in Sources */,
 				4D11D3CE2FAFB7780051B62B /* BrowseViewController.swift in Sources */,
+				4D11D3D32FAFB7780051B62B /* ListenTimeTracker.swift in Sources */,
+				4D11D3D42FAFB7780051B62B /* RadioUsageManager.swift in Sources */,
+				4D11D3D52FAFB7780051B62B /* UsageDonationsViewController.swift in Sources */,
 				BD1F977C1FD7894C00F89CCD /* MiniPlayerShadowView.swift in Sources */,
 				FF26A9924A1B5C2D00000002 /* MiniPlayerGlassProgressView.swift in Sources */,
 				FF26A99A4A1B5C2D00000004 /* MiniPlayerScrollingTitleView.swift in Sources */,

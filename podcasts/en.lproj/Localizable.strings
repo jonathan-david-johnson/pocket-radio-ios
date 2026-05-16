@@ -6057,3 +6057,42 @@
 
 /* tv up next empty button action title */
 "tv_up_next_empty_action_title" = "Add episodes";
+
+/* Title for Usage & Donations screen */
+"usage_donations_title" = "Usage & Donations";
+
+/* Section header for radio stations in Usage & Donations */
+"radio_stations_section" = "RADIO STATIONS";
+
+/* Section header for podcasts in Usage & Donations */
+"podcasts_section" = "PODCASTS";
+
+/* Section header for totals in Usage & Donations */
+"total_section" = "TOTAL";
+
+/* Estimated cost format, %1$@ is the formatted dollar amount */
+"est_cost_format" = "Est. cost to station: $%1$@";
+
+/* Support button title, %1$@ is the station name */
+"support_button_title" = "Support %1$@ ↗";
+
+/* Placeholder for donation amount input */
+"donation_placeholder" = "$0.00";
+
+/* Radio listen time format, %1$@ is the formatted duration */
+"radio_listen_time_format" = "%1$@ listened";
+
+/* Support ratio format, %1$@ is the ratio number, %2$@ is the emoji */
+"support_ratio_format" = "Your support ratio: %1$@x %2$@";
+
+/* Estimated total cost format, %1$@ is the formatted dollar amount */
+"estimated_total_cost_format" = "Est. total cost: $%1$@";
+
+/* Total donated format, %1$@ is the formatted dollar amount */
+"total_donated_format" = "Total donated: $%1$@";
+
+/* Label for radio total in summary */
+"radio_total" = "Radio:";
+
+/* Label for podcasts total in summary */
+"podcasts_total" = "Podcasts:";
