@@ -24,21 +24,17 @@ extension MainTabBarController {
         let increaseSpeedCommand = UIKeyCommand(title: L10n.keycommandIncreaseSpeed, action: #selector(handleIncreaseSpeed), input: "]", modifierFlags: [.command])
         addKeyCommand(increaseSpeedCommand)
 
-        // navigation
-        let podcastsCommand = UIKeyCommand(title: L10n.podcastsPlural, action: #selector(handlePodcasts), input: "1", modifierFlags: [.command])
-        addKeyCommand(podcastsCommand)
-
-        let filtersCommand = UIKeyCommand(title: L10n.filters, action: #selector(handleFilters), input: "2", modifierFlags: [.command])
-        addKeyCommand(filtersCommand)
-
-        let discoverCommand = UIKeyCommand(title: L10n.discover, action: #selector(handleDiscover), input: "3", modifierFlags: [.command])
-        addKeyCommand(discoverCommand)
-
-        let upNextCommand = UIKeyCommand(title: L10n.upNext, action: #selector(handleUpNext), input: "4", modifierFlags: [.command])
-        addKeyCommand(upNextCommand)
-
-        let profileCommand = UIKeyCommand(title: L10n.profile, action: #selector(handleProfile), input: "5", modifierFlags: [.command])
-        addKeyCommand(profileCommand)
+        // navigation — positional over the visible slots, titles read from the
+        // slot. A destination that is not promoted has no shortcut, which is why
+        // the old ⌘ 4 Up Next binding is gone: Up Next is not promoted by default.
+        for (index, destination) in renderedDestinations.prefix(9).enumerated() {
+            let command = UIKeyCommand(title: destination.title(),
+                                       action: #selector(handleTabShortcut(_:)),
+                                       input: "\(index + 1)",
+                                       modifierFlags: [.command],
+                                       propertyList: index)
+            addKeyCommand(command)
+        }
 
         let searchCommand = UIKeyCommand(title: L10n.search, action: #selector(handleSearch), input: "f", modifierFlags: [.command])
         addKeyCommand(searchCommand)
@@ -64,24 +60,11 @@ extension MainTabBarController {
         PlaybackManager.shared.skipForward()
     }
 
-    @objc private func handlePodcasts() {
-        navigateToPodcastList(true)
-    }
+    @objc private func handleTabShortcut(_ sender: UIKeyCommand) {
+        guard let index = sender.propertyList as? Int,
+              let destination = renderedDestinations[safe: index] else { return }
 
-    @objc private func handleFilters() {
-        navigateToFilterTab()
-    }
-
-    @objc private func handleDiscover() {
-        navigateToDiscover(true)
-    }
-
-    @objc private func handleUpNext() {
-        navigateToUpNext(true)
-    }
-
-    @objc private func handleProfile() {
-        navigateToProfile(animated: true)
+        navigate(to: destination)
     }
 
     @objc private func handleDecreaseSpeed() {

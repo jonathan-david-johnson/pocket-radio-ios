@@ -226,7 +226,7 @@ class ProfileViewController: PCViewController, UITableViewDataSource, UITableVie
     // MARK: - Actions
 
     @objc private func checkForScrollTap(_ notification: Notification) {
-        if let index = notification.object as? Int, index == tabBarItem.tag, profileTable.contentOffset.y > 0 {
+        if let destinationID = notification.object as? String, destinationID == tabDestinationID, profileTable.contentOffset.y > 0 {
             profileTable.setContentOffset(CGPoint.zero, animated: true)
         }
     }

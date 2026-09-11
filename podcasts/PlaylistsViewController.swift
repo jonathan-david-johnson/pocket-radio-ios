@@ -145,7 +145,7 @@ class PlaylistsViewController: PCViewController, FilterCreatedDelegate {
 
     @objc private func checkForScrollTap(_ notification: Notification) {
         let topOffset = view.safeAreaInsets.top
-        if let index = notification.object as? Int, index == tabBarItem.tag, filtersTable.contentOffset.y > -topOffset {
+        if let destinationID = notification.object as? String, destinationID == tabDestinationID, filtersTable.contentOffset.y > -topOffset {
             filtersTable.setContentOffset(CGPoint(x: 0, y: -topOffset), animated: true)
         }
     }

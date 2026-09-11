@@ -294,7 +294,7 @@ class PodcastListViewController: PCViewController, ShareListDelegate {
 
     @objc private func checkForScrollTap(_ notification: Notification) {
         let topOffset = -PCSearchBarController.defaultHeight - view.safeAreaInsets.top
-        if let index = notification.object as? Int, index == tabBarItem.tag, podcastsCollectionView.contentOffset.y.rounded(.down) > topOffset.rounded(.down) {
+        if let destinationID = notification.object as? String, destinationID == tabDestinationID, podcastsCollectionView.contentOffset.y.rounded(.down) > topOffset.rounded(.down) {
             podcastsCollectionView.setContentOffset(CGPoint(x: -horizontalMargin, y: topOffset), animated: true)
         } else {
             // When double-tapping on tab bar, dismiss the search if already active

@@ -188,6 +188,9 @@ enum AnalyticsEvent: String {
     case discoverTabOpened
     case profileTabOpened
     case upNextTabOpened
+    /// The derived "More" tab. Overflow is not a `TabDestination`, so it gets
+    /// its own event rather than a case in `AnalyticsHelper.tabSelected`.
+    case overflowTabOpened
 
     // MARK: - Downloads View
 
