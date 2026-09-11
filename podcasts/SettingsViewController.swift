@@ -6,7 +6,7 @@ import WatchConnectivity
 
 class SettingsViewController: PCViewController, UITableViewDataSource, UITableViewDelegate {
     enum TableRow: String {
-        case general, notifications, appearance, storageAndDataUse
+        case general, notifications, appearance, tabBar, storageAndDataUse
         case autoArchive, autoDownload, autoAddToUpNext, siriShortcuts
         case watch, customFiles, importSteps, opml
         case about, pocketCastsPlus, privacy
@@ -36,6 +36,8 @@ class SettingsViewController: PCViewController, UITableViewDataSource, UITableVi
                 return (L10n.settingsNotifications, UIImage(named: "settings_notifications"))
             case .appearance:
                 return (L10n.settingsAppearance, UIImage(named: "settings_appearance"))
+            case .tabBar:
+                return ("Tab Bar", UIImage(systemName: "rectangle.bottomthird.inset.filled"))
             case .storageAndDataUse:
                 return (L10n.settingsStorage, UIImage(named: "settings_storage"))
             case .autoArchive:
@@ -87,7 +89,7 @@ class SettingsViewController: PCViewController, UITableViewDataSource, UITableVi
         return [
             developerSection,
             [.pocketCastsPlus],
-            [.general, .notifications, .appearance],
+            [.general, .notifications, .appearance, .tabBar],
             [.autoArchive, .autoDownload, .autoAddToUpNext],
             [.storageAndDataUse, .siriShortcuts, .headphoneControls, .watch, .customFiles],
             [.importSteps, .opml],
@@ -166,6 +168,10 @@ class SettingsViewController: PCViewController, UITableViewDataSource, UITableVi
             navigationController?.pushViewController(NotificationsViewController(), animated: true)
         case .appearance:
             navigationController?.pushViewController(AppearanceViewController(), animated: true)
+        case .tabBar:
+            let hostingController = UIHostingController(rootView: TabBarSettingsView().setupDefaultEnvironment())
+            hostingController.title = "Tab Bar"
+            navigationController?.pushViewController(hostingController, animated: true)
         case .storageAndDataUse:
             navigationController?.pushViewController(StorageAndDataUseViewController(), animated: true)
         case .autoAddToUpNext:

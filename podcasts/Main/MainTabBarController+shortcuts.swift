@@ -24,20 +24,32 @@ extension MainTabBarController {
         let increaseSpeedCommand = UIKeyCommand(title: L10n.keycommandIncreaseSpeed, action: #selector(handleIncreaseSpeed), input: "]", modifierFlags: [.command])
         addKeyCommand(increaseSpeedCommand)
 
-        // navigation — positional over the visible slots, titles read from the
-        // slot. A destination that is not promoted has no shortcut, which is why
-        // the old ⌘ 4 Up Next binding is gone: Up Next is not promoted by default.
-        for (index, destination) in renderedDestinations.prefix(9).enumerated() {
-            let command = UIKeyCommand(title: destination.title(),
-                                       action: #selector(handleTabShortcut(_:)),
-                                       input: "\(index + 1)",
-                                       modifierFlags: [.command],
-                                       propertyList: index)
-            addKeyCommand(command)
-        }
+        refreshTabKeyboardShortcuts()
 
         let searchCommand = UIKeyCommand(title: L10n.search, action: #selector(handleSearch), input: "f", modifierFlags: [.command])
         addKeyCommand(searchCommand)
+    }
+
+    /// Installs the ⌘1–⌘N tab shortcuts for the bar as it stands, retiring any
+    /// previous set.
+    ///
+    /// Navigation shortcuts are **positional** over the visible slots, titles
+    /// read from the slot. A destination that is not promoted has no shortcut,
+    /// which is why the old ⌘4 Up Next binding is gone: Up Next is not promoted
+    /// by default. Because they are positional, a controlled rebuild has to
+    /// re-install them or ⌘N keeps the old title and lands on the old index.
+    func refreshTabKeyboardShortcuts() {
+        tabKeyCommands.forEach { removeKeyCommand($0) }
+
+        tabKeyCommands = renderedDestinations.prefix(9).enumerated().map { index, destination in
+            UIKeyCommand(title: destination.title(),
+                         action: #selector(handleTabShortcut(_:)),
+                         input: "\(index + 1)",
+                         modifierFlags: [.command],
+                         propertyList: index)
+        }
+
+        tabKeyCommands.forEach { addKeyCommand($0) }
     }
 
     @objc func handleSearch() {

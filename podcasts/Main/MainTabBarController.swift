@@ -18,6 +18,11 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
 
     let playPauseCommand = UIKeyCommand(title: L10n.keycommandPlayPause, action: #selector(handlePlayPauseKey), input: " ", modifierFlags: [])
 
+    /// The ⌘1–⌘N tab shortcuts currently installed. Held so a rebuild can
+    /// retire them: they are positional over `renderedDestinations`, so a stale
+    /// set would carry the old titles and point ⌘N at the wrong destination.
+    var tabKeyCommands: [UIKeyCommand] = []
+
     lazy var endOfYear = EndOfYear()
 
     /// Long-lived because it carries the End of Year badge and the gravatar
@@ -185,7 +190,16 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     /// The default layout produces exactly the five tabs the app had before M12,
     /// in the same order, with the same titles and icons.
     private func buildTabs() {
-        let layout = TabLayoutStore.shared.load()
+        buildTabs(from: TabLayoutStore.shared.load(), animated: false)
+    }
+
+    /// Builds `viewControllers` from `layout`.
+    ///
+    /// Split out from `buildTabs()` so a controlled rebuild renders the layout
+    /// it was handed rather than re-reading the store — the store has already
+    /// been written by then, but keeping the two independent means the rebuild
+    /// cannot silently render something other than what it was asked to.
+    private func buildTabs(from layout: TabLayout, animated: Bool) {
         let plan = layout.renderPlan(capacity: TabLayout.capacity(for: traitCollection),
                                      isAvailable: { $0.isAvailable })
 
@@ -220,7 +234,7 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
             controllers.append(navController)
         }
 
-        viewControllers = controllers
+        setViewControllers(controllers, animated: animated)
     }
 
     private func tabBarItem(for destination: TabDestination) -> UITabBarItem {
@@ -234,27 +248,158 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
         return UITabBarItem(title: destination.title(), image: destination.icon(), tag: 0)
     }
 
+    /// The id naming the tab that is selected right now: a `destinationID`, or
+    /// Overflow's reserved id. This is what gets persisted to `lastTabOpenedID`
+    /// and what a rebuild restores against.
+    private var selectedTabID: String? {
+        if selectedIndex == overflowIndex {
+            return TabOverflow.id
+        }
+
+        return renderedDestinations[safe: selectedIndex]?.id
+    }
+
+    /// Resolves a selection id — persisted or live — to an index in the bar as
+    /// it stands, or `nil` when nothing in the current bar answers to it.
+    ///
+    /// Overflow is derived, so its reserved id names a *position* rather than a
+    /// destination, and names nothing at all once the layout stops needing
+    /// Overflow.
+    private func tabIndex(forSelectionID id: String?) -> Int? {
+        guard let id else { return nil }
+
+        if id == TabOverflow.id {
+            return overflowIndex
+        }
+
+        return renderedDestinations.firstIndex { $0.id == id }
+    }
+
     /// Restores the selected tab by `destinationID`, never by index.
     private func restoreSelectedTab() {
         let storedID = UserDefaults.standard.string(forKey: Constants.UserDefaults.lastTabOpenedID)
-
-        // Overflow is derived, so its reserved id names a position rather than a
-        // destination — and names nothing at all if the layout has since stopped
-        // needing Overflow, in which case we fall through to the first tab.
-        if storedID == TabOverflow.id, let overflowIndex {
-            selectedIndex = overflowIndex
-            trackOverflowOpened(isInitial: true)
-            return
-        }
-
-        let index = storedID.flatMap { id in renderedDestinations.firstIndex { $0.id == id } } ?? 0
+        let index = tabIndex(forSelectionID: storedID) ?? 0
 
         selectedIndex = index
 
         // Track the initial tab opened event
-        if let destination = renderedDestinations[safe: index] {
+        if index == overflowIndex {
+            trackOverflowOpened(isInitial: true)
+        } else if let destination = renderedDestinations[safe: index] {
             trackTabOpened(destination, isInitial: true)
         }
+    }
+
+    // MARK: - Controlled rebuild
+
+    /// Tears down `viewControllers` and reconstructs the bar from `layout`,
+    /// keeping the user where they were.
+    ///
+    /// **This is not the entry point.** Call
+    /// `TabLayoutApplier.apply(_:source:)`, which persists the layout, stamps
+    /// `updatedAt` and emits the analytics event before getting here. There are
+    /// exactly two legal reasons to rebuild — the user saving the tab bar
+    /// settings screen, and the safe sync-pull path in M12.3 — and
+    /// `TabLayoutChangeSource` makes a third caller declare itself.
+    ///
+    /// Never call this from a background notification. Slot *structure* is
+    /// frozen mid-session by design (see the design doc §6): changing the slot
+    /// count moves `selectedIndex` under whatever is on screen. The main-thread
+    /// guard below catches the most likely way of getting that wrong, a sync
+    /// notification delivered off the main queue, but it cannot catch a
+    /// main-queue notification — that one is on the reader.
+    func rebuildTabs(from layout: TabLayout, animated: Bool) {
+        guard Thread.isMainThread else {
+            assertionFailure("rebuildTabs must run on the main thread — go through TabLayoutApplier")
+            DispatchQueue.main.async { [weak self] in
+                self?.rebuildTabs(from: layout, animated: animated)
+            }
+            return
+        }
+
+        // Captured before teardown: after it, `renderedDestinations` describes
+        // the new bar and the old selection is unrecoverable.
+        let previousSelectionID = selectedTabID
+
+        dismissToRootForRebuild()
+
+        buildTabs(from: layout, animated: animated)
+
+        // Selection is restored by identity. If the destination the user was on
+        // no longer has a slot, fall back to the first one.
+        selectedIndex = tabIndex(forSelectionID: previousSelectionID) ?? 0
+
+        // Written *after* the rebuild, never before: a layout that drops the
+        // selected destination has to persist the fallback that is actually on
+        // screen, not the ghost it replaced.
+        if let selectedTabID {
+            UserDefaults.standard.set(selectedTabID, forKey: Constants.UserDefaults.lastTabOpenedID)
+        }
+
+        // Fix-ups for the things that outlive a rebuild and therefore have to be
+        // re-pointed at the new bar.
+        displayEndOfYearBadgeIfNeeded()
+        refreshProfileTabAvatar()
+        refreshTabKeyboardShortcuts()
+        fixTarBarTraitCollectionOnIpadForiOS18()
+        reassertMiniPlayerPosition()
+    }
+
+    /// Brings down anything presented and empties the stacks we are about to
+    /// discard.
+    ///
+    /// The full screen player and Up Next are presented from *this* controller,
+    /// so they sit above the tabs being replaced. Non-animated and synchronous
+    /// on purpose: an in-flight dismissal animation over a bar that is changing
+    /// shape is how you end up with an orphaned modal.
+    private func dismissToRootForRebuild() {
+        let miniPlayer = NavigationManager.sharedManager.miniPlayer
+
+        if presentedViewController != nil {
+            // Dismissing from here takes the whole presented chain with it.
+            dismiss(animated: false)
+        }
+
+        // The mini player tracks the full screen player itself, so tell it
+        // rather than leaving `playerOpenState` stuck at `.open` pointing at a
+        // container that is on its way out. Same order as
+        // `closeFullScreenPlayer`'s completion block.
+        if let miniPlayer, miniPlayer.playerOpenState != .closed {
+            miniPlayer.playerOpenState = .closed
+            miniPlayer.finishedWithFullScreenPlayer()
+        }
+
+        // Pop what is about to be thrown away, so pushed controllers see
+        // `viewWillDisappear` in the normal order instead of during dealloc.
+        viewControllers?
+            .compactMap { $0 as? UINavigationController }
+            .forEach { $0.popToRootViewController(animated: false) }
+    }
+
+    /// Re-asserts the mini player's place in the view hierarchy after a
+    /// rebuild.
+    ///
+    /// The mini player is **not** part of `viewControllers`: `setupMiniPlayer()`
+    /// runs once, from `viewDidLoad`, and either inserts its view directly into
+    /// this controller's view below `tabBar` or — under Liquid Glass — installs
+    /// it as the tab bar's bottom accessory. Replacing `viewControllers` leaves
+    /// it and its constraints alone, and playback lives in the
+    /// `PlaybackManager` singleton regardless. This only guards against the tab
+    /// bar controller re-inserting a fresh content view above it.
+    private func reassertMiniPlayerPosition() {
+        guard !LiquidGlass.isEnabled else { return }
+
+        guard let miniPlayerView = NavigationManager.sharedManager.miniPlayer?.view,
+              miniPlayerView.superview === view,
+              let miniPlayerPosition = view.subviews.firstIndex(of: miniPlayerView),
+              let tabBarPosition = view.subviews.firstIndex(of: tabBar),
+              miniPlayerPosition > tabBarPosition else {
+            return
+        }
+
+        // Same superview, so the constraints set up in `setupMiniPlayer()`
+        // survive the move.
+        view.insertSubview(miniPlayerView, belowSubview: tabBar)
     }
 
     /// Routes to a destination the way the rest of the app expects to reach it.

@@ -191,6 +191,9 @@ enum AnalyticsEvent: String {
     /// The derived "More" tab. Overflow is not a `TabDestination`, so it gets
     /// its own event rather than a case in `AnalyticsHelper.tabSelected`.
     case overflowTabOpened
+    /// The user's tab bar layout changed. Carries `slots`, the ordered slot ids,
+    /// and `source`, which of the two legal reasons applied it.
+    case tabBarLayoutChanged
 
     // MARK: - Downloads View
 
