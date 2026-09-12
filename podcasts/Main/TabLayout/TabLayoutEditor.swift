@@ -129,14 +129,19 @@ final class TabLayoutEditor: ObservableObject {
     /// Moves a row, which is also how the user promotes and demotes: the drop
     /// position relative to the More row decides which.
     ///
-    /// Refuses a demotion that would empty the bar, and refuses to move the
-    /// More row itself.
+    /// Dragging the More row itself moves the boundary — see
+    /// `moveBoundary(toRow:from:)`. Refuses anything that would empty the bar.
     func move(fromRows source: IndexSet, toRow destination: Int) {
         let currentRows = rows
 
-        guard let sourceRow = source.first,
-              sourceRow < currentRows.count,
-              case .destination(let moved) = currentRows[sourceRow] else { return }
+        guard let sourceRow = source.first, sourceRow < currentRows.count else { return }
+
+        if currentRows[sourceRow] == .more {
+            moveBoundary(toRow: destination, from: sourceRow)
+            return
+        }
+
+        guard case .destination(let moved) = currentRows[sourceRow] else { return }
 
         let moreRow = currentRows.firstIndex(of: .more)
         let landsAboveMore = moreRow.map { destination <= $0 } ?? true
@@ -168,6 +173,41 @@ final class TabLayoutEditor: ObservableObject {
         // A drag into a full bar has to push something out. Never the row the
         // user just dropped, or the gesture would silently undo itself.
         normalize(protecting: landsAboveMore ? moved : nil)
+    }
+
+    /// Dragging the **More** row moves the line rather than a tab: whatever
+    /// ends up above it is the bar.
+    ///
+    /// This exists for a reason that is not obvious from the screen. The row
+    /// was `moveDisabled`, being the one row that is structure rather than a
+    /// tab — but a `moveDisabled` row is not a legal drop target either, and
+    /// UIKit refuses any reorder whose final index is the one that row
+    /// occupies. That made both positions beside More unreachable: an item
+    /// could never be promoted into the last bar slot, and a tab could never be
+    /// demoted to the top of More. `onMove` was not called at all for those
+    /// drops, so no amount of index handling here could have helped. Letting
+    /// the line itself move is what makes the boundary reachable from both
+    /// sides.
+    ///
+    /// Over-capacity drags are not refused, they are clamped: `normalize` trims
+    /// the bar's tail, so dragging More far down promotes as much as the device
+    /// can render and no more.
+    private func moveBoundary(toRow destination: Int, from sourceRow: Int) {
+        let ordered = rows.compactMap { row -> TabDestination? in
+            guard case .destination(let destination) = row else { return nil }
+            return destination
+        }
+
+        // `destination` is a pre-move index, so a drag downwards counts the
+        // More row itself on the way past.
+        let boundary = destination > sourceRow ? destination - 1 : destination
+
+        // The bar may never go empty.
+        guard boundary >= 1 else { return }
+
+        bar = Array(ordered.prefix(boundary))
+
+        normalize()
     }
 
     /// Deletes non-core rows. Core rows are undeletable, and a delete that

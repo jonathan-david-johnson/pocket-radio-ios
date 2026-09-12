@@ -140,6 +140,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
         RadioFavoritesSeeder.seedIfNeeded()
 
+        // Fire-and-forget: pulling the synced tab layout is not awaited, so a
+        // slow or failed network call never delays launch.
+        Task { await TabLayoutSyncService.shared.pullAtLaunch() }
+
         RemoteControlManager.shared.setup()
 
         return true

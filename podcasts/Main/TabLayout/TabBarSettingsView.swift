@@ -1,14 +1,21 @@
 import PocketCastsDataModel
+import PocketCastsServer
 import SwiftUI
 
 /// Settings screen for the configurable tab bar. Pushed from
 /// `SettingsViewController` in a `UIHostingController`.
 ///
-/// One ordered list with a fixed **More** row in it: above that row is the tab
-/// bar, below it is the More tab. Dragging across the row promotes or demotes,
-/// so reorder, promote and demote are a single gesture rather than three
-/// different interactions. The More row is structure, not a preview of the bar
-/// — the milestone rules a live preview out of v1.
+/// One ordered list with a **More** row in it: above that row is the tab bar,
+/// below it is the More tab. Dragging across the row promotes or demotes, so
+/// reorder, promote and demote are a single gesture rather than three different
+/// interactions. The More row is structure, not a preview of the bar — the
+/// milestone rules a live preview out of v1.
+///
+/// The More row is draggable, and deliberately so — see
+/// `TabLayoutEditor.moveBoundary(toRow:from:)`. It was `moveDisabled` until a
+/// device test found that this made the positions either side of it
+/// unreachable: a `moveDisabled` row is not a legal drop target, and UIKit
+/// refuses any reorder whose final index is the one it occupies.
 ///
 /// File location deviation from the milestone as written
 /// (`podcasts/Settings/TabBarSettingsView.swift`): that directory does not
@@ -43,7 +50,6 @@ struct TabBarSettingsView: View {
             Section {
                 ForEach(editor.rows) { row in
                     view(for: row)
-                        .moveDisabled(row == .more)
                         .deleteDisabled(!editor.canDelete(row))
                 }
                 .onMove { source, destination in
@@ -88,12 +94,16 @@ struct TabBarSettingsView: View {
     private var footer: some View {
         VStack(alignment: .leading, spacing: 8) {
             if editor.needsMoreRow {
-                Text("More takes a slot of its own, so the bar holds \(editor.barCapacity) of your tabs while it is shown. Drag an item above More to put it in the bar.")
+                Text("More takes a slot of its own, so the bar holds \(editor.barCapacity) of your tabs while it is shown. Drag an item above More to put it in the bar, or drag More itself to move the line.")
             } else {
                 Text("Drag to reorder. Adding a \(editor.capacity + 1)th tab creates a More tab for whatever does not fit.")
             }
 
-            Text("Your tab bar layout syncs across your devices when you're signed in.")
+            if SyncManager.isUserLoggedIn() {
+                Text("Your tab bar layout syncs across your devices.")
+            } else {
+                Text("Your tab bar layout is saved on this device only. Sign in to sync it across your devices.")
+            }
         }
         .foregroundColor(AppTheme.color(for: .primaryText02, theme: theme))
     }

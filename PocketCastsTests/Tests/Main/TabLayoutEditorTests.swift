@@ -167,4 +167,100 @@ final class TabLayoutEditorTests: XCTestCase {
                        "the rows below More are the More tab, in order")
         XCTAssertEqual(plan.visible.count + 1, capacity, "bar items plus More fill the bar exactly")
     }
+
+    // MARK: - The two positions beside More
+
+    /// Every index below is one this screen actually produced on an iOS 26.4
+    /// simulator, read back out of a temporary log in `move(fromRows:toRow:)`.
+    /// They are recorded because the interesting bug here was not arithmetic:
+    /// the More row was `moveDisabled`, which makes it an illegal drop target
+    /// as well as an immovable row, and UIKit silently refused any reorder
+    /// whose final index was the one More occupied. `onMove` was never called
+    /// for the two drops beside it, so the list just animated back. These
+    /// tests pin the model against the real indices; only a device or
+    /// simulator can prove the drops arrive at all.
+    private func usersLayout() -> TabLayoutEditor {
+        let editor = self.editor([.podcasts,
+                                  .playlist(uuid: "a"),
+                                  .playlist(uuid: "b"),
+                                  .streams,
+                                  .playlist(uuid: "c")])
+
+        XCTAssertEqual(editor.rows.firstIndex(of: .more), 4)
+        XCTAssertEqual(ids(editor.bar), ["podcasts", "playlist:a", "playlist:b", "streams"])
+        XCTAssertEqual(ids(editor.belowMore), ["playlist:c", "playlists", "discover", "profile"])
+
+        return editor
+    }
+
+    func testPromotingIntoTheLastBarSlotEvictsWhatWasThereRatherThanBeingRefused() {
+        let editor = usersLayout()
+
+        // Dropped just above More, so the destination is More's own index.
+        editor.move(fromRows: IndexSet(integer: 5), toRow: 4)
+
+        XCTAssertEqual(ids(editor.bar), ["podcasts", "playlist:a", "playlist:b", "playlist:c"],
+                       "the dropped row takes the last slot")
+        XCTAssertEqual(ids(editor.belowMore), ["playlists", "discover", "streams", "profile"],
+                       "and the row it displaced falls into More")
+    }
+
+    func testDemotingToTheTopOfMoreIsHonoured() {
+        let editor = usersLayout()
+        editor.move(fromRows: IndexSet(integer: 5), toRow: 4)
+
+        // rows == [podcasts, a, b, c, .more, playlists, discover, streams, profile]
+        editor.move(fromRows: IndexSet(integer: 3), toRow: 5)
+
+        XCTAssertEqual(ids(editor.bar), ["podcasts", "playlist:a", "playlist:b"])
+        XCTAssertEqual(editor.belowMore.first, .playlist(uuid: "c"),
+                       "a demotion to the first position inside More is still a demotion")
+    }
+
+    // MARK: - Dragging the More row moves the boundary
+
+    func testDraggingMoreUpDemotesEverythingBelowItsNewPosition() {
+        let editor = usersLayout()
+
+        // More is at row 4; dropping it at row 2 leaves two rows above it.
+        editor.move(fromRows: IndexSet(integer: 4), toRow: 2)
+
+        XCTAssertEqual(ids(editor.bar), ["podcasts", "playlist:a"])
+        XCTAssertEqual(ids(editor.belowMore),
+                       ["playlist:b", "playlist:c", "playlists", "discover", "streams", "profile"])
+    }
+
+    func testDraggingMoreDownPromotesWhatItPassed() {
+        let editor = self.editor([.podcasts])
+        XCTAssertEqual(editor.rows.firstIndex(of: .more), 1)
+
+        // Downwards, so the pre-move destination counts the More row itself.
+        editor.move(fromRows: IndexSet(integer: 1), toRow: 3)
+
+        XCTAssertEqual(ids(editor.bar), ["podcasts", "playlists"],
+                       "the row the line was dragged past is now a tab")
+    }
+
+    func testDraggingMoreToTheBottomPromotesOnlyWhatTheBarCanRender() {
+        let editor = usersLayout()
+        let rowCount = editor.rows.count
+
+        editor.move(fromRows: IndexSet(integer: 4), toRow: rowCount)
+
+        // Not a refusal — a clamp. Promoting everything would empty More, but
+        // three core destinations cannot fit, so More survives, keeps its slot,
+        // and the bar settles back at its capacity of four.
+        XCTAssertEqual(editor.bar.count, editor.barCapacity)
+        XCTAssertEqual(ids(editor.bar), ["podcasts", "playlist:a", "playlist:b", "streams"])
+        XCTAssertTrue(editor.needsMoreRow)
+    }
+
+    func testDraggingMoreToTheTopIsRefusedRatherThanEmptyingTheBar() {
+        let editor = usersLayout()
+
+        editor.move(fromRows: IndexSet(integer: 4), toRow: 0)
+
+        XCTAssertEqual(ids(editor.bar), ["podcasts", "playlist:a", "playlist:b", "streams"],
+                       "the bar may never go empty, so the line does not move")
+    }
 }

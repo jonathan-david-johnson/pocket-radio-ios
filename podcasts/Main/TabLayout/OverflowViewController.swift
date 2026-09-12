@@ -91,6 +91,17 @@ class OverflowViewController: UIViewController, UITableViewDataSource, UITableVi
         }
     }
 
+    // MARK: - Content
+
+    /// Redraws the rows. Each cell asks its destination for a title and icon at
+    /// draw time, so a reload is the whole update — which is what makes a
+    /// renamed playlist in a truncated slot cost one line (M12.3 §4).
+    func refreshRows() {
+        guard isViewLoaded else { return }
+
+        tableView.reloadData()
+    }
+
     // MARK: - Theme
 
     @objc private func themeDidChange() {

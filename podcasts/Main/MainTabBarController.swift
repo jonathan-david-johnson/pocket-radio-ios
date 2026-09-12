@@ -161,6 +161,7 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
         NotificationCenter.default.addObserver(self, selector: #selector(handleFollowSystemThemeTurnedOn), name: Constants.Notifications.followSystemThemeTurnedOn, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(willEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(profileSeen), name: Constants.Notifications.profileSeen, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(playlistsDidChange), name: Constants.Notifications.playlistChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(refreshProfileTabAvatar), name: .userLoginDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(refreshProfileTabAvatarForcingReload), name: Constants.Notifications.avatarNeedsRefreshing, object: nil)
         refreshProfileTabAvatar()
@@ -291,6 +292,48 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     }
 
     // MARK: - Controlled rebuild
+
+    /// Whether a layout arriving from sync may be applied to the live bar right
+    /// now, as opposed to being persisted and left to render at next launch.
+    ///
+    /// M12.3 §3, and the rule the whole design rests on: a rebuild replaces
+    /// every `viewControllers` entry, so anything the user is part-way through
+    /// would be thrown away. The settings screen is allowed to do that because
+    /// the user asked for it in that moment. A device they are not holding is
+    /// not.
+    ///
+    /// Two conditions, both read at apply time rather than at fetch time:
+    ///
+    /// 1. Nothing is presented modally — not from here, and not from any tab's
+    ///    navigation controller. The full screen player and Up Next are
+    ///    presented from this controller; a settings sheet is presented from a
+    ///    tab's stack.
+    /// 2. Every tab's navigation stack is at its root, so there is nothing
+    ///    pushed to lose.
+    ///
+    /// The mini player's own open state is checked alongside the first
+    /// condition: it tracks the full screen player separately, so a dismissal
+    /// still in flight leaves `presentedViewController` nil while the mini
+    /// player still believes the player is open.
+    var isSafeToRebuild: Bool {
+        guard presentedViewController == nil else { return false }
+
+        for controller in viewControllers ?? [] {
+            guard controller.presentedViewController == nil else { return false }
+
+            if let navController = controller as? UINavigationController {
+                guard navController.viewControllers.count <= 1 else { return false }
+            }
+        }
+
+        if let miniPlayer = NavigationManager.sharedManager.miniPlayer,
+           miniPlayer.playerOpenState != .closed {
+            return false
+        }
+
+        return true
+    }
+
 
     /// Tears down `viewControllers` and reconstructs the bar from `layout`,
     /// keeping the user where they were.

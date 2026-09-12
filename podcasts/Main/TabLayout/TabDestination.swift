@@ -170,35 +170,11 @@ enum TabDestination: Hashable {
                 // Unreachable via the render plan, which drops unavailable
                 // playlist slots. Kept for a playlist deleted between the plan
                 // and the build.
-                controller = Self.makeMissingPlaylistController()
+                controller = MissingPlaylistViewController()
             }
         }
 
         controller.tabDestinationID = id
-
-        return controller
-    }
-
-    /// Shown when a promoted playlist has been deleted out from under its slot.
-    /// The slot is kept (design §6) rather than silently changing the bar.
-    private static func makeMissingPlaylistController() -> UIViewController {
-        let controller = UIViewController()
-        controller.view.backgroundColor = AppTheme.colorForStyle(.primaryUi04)
-
-        let label = ThemeableLabel()
-        label.style = .primaryText02
-        label.text = "This playlist was deleted"
-        label.textAlignment = .center
-        label.numberOfLines = 0
-        label.translatesAutoresizingMaskIntoConstraints = false
-        controller.view.addSubview(label)
-
-        NSLayoutConstraint.activate([
-            label.centerXAnchor.constraint(equalTo: controller.view.centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: controller.view.centerYAnchor),
-            label.leadingAnchor.constraint(greaterThanOrEqualTo: controller.view.leadingAnchor, constant: 20),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: controller.view.trailingAnchor, constant: -20)
-        ])
 
         return controller
     }
