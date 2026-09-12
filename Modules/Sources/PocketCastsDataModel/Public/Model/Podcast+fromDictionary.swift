@@ -57,10 +57,25 @@ extension Podcast {
         if let isPrivate = podcastJson["is_private"] as? Bool {
             podcast.isPrivate = isPrivate
         }
+        if let isExplicit = podcastJson["explicit"] as? Bool {
+            podcast.isExplicit = isExplicit
+        } else if let isExplicit = podcastJson["explicit"] as? Int {
+            podcast.isExplicit = isExplicit > 0
+        }
         if let fundingsJson = podcastJson["fundings"] as? [[String: Any]], let url = fundingsJson.first?["url"] as? String {
             podcast.fundingURL = url
         }
+        podcast.networkListId = networkListId(fromPodcastJson: podcastJson)
 
         return podcast
+    }
+
+    /// The id of the network list a podcast belongs to, read from the `network_list` object of a podcast payload.
+    public static func networkListId(fromPodcastJson podcastJson: [String: Any]) -> String? {
+        guard let listId = (podcastJson["network_list"] as? [String: Any])?["list_id"] as? String, !listId.isEmpty else {
+            return nil
+        }
+
+        return listId
     }
 }

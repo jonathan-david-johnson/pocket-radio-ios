@@ -2,6 +2,11 @@ import UIKit
 import SwiftUI
 import PocketCastsDataModel
 
+protocol FilterCreatedDelegate: AnyObject {
+    func filterCreated(newFilter: EpisodeFilter)
+    var presentingPlaylistDetail: Bool { get set }
+}
+
 class NewPlaylistViewController: PCViewController {
     enum CreationType: Equatable {
         case `default`
@@ -129,8 +134,14 @@ class NewPlaylistViewController: PCViewController {
         navigationController?.navigationBar.prefersLargeTitles = true
         navigationItem.largeTitleDisplayMode = .always
 
+        if !LiquidGlass.isEnabled {
+            configureLegacyOpaqueNavBarAppearance()
+        }
+    }
+
+    private func configureLegacyOpaqueNavBarAppearance() {
         let appearance = UINavigationBarAppearance()
-        appearance.backgroundColor = backgroundColor
+        appearance.backgroundColor = AppTheme.viewBackgroundColor()
         appearance.largeTitleTextAttributes = [
             NSAttributedString.Key.foregroundColor: AppTheme.colorForStyle(.primaryText01)
         ]
@@ -139,7 +150,6 @@ class NewPlaylistViewController: PCViewController {
         ]
         navigationController?.navigationBar.scrollEdgeAppearance = appearance
         navigationController?.navigationBar.standardAppearance = appearance
-        navigationController?.navigationBar.sizeToFit()
     }
 
     private func setupContent() {
@@ -199,8 +209,6 @@ class NewPlaylistViewController: PCViewController {
         }
 
         NSLayoutConstraint.activate(constraints)
-
-        view.layoutSubviews()
     }
 
     private func addCloseButton() {

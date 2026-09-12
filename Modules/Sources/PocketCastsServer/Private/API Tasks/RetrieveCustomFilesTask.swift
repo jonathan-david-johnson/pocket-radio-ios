@@ -3,7 +3,7 @@ import PocketCastsDataModel
 import PocketCastsUtils
 import SwiftProtobuf
 
-class RetrieveCustomFilesTask: ApiBaseTask {
+class RetrieveCustomFilesTask: ApiBaseTask, @unchecked Sendable {
     override func apiTokenAcquired(token: String) {
         let url = ServerConstants.Urls.api() + "files"
 
@@ -95,7 +95,7 @@ class RetrieveCustomFilesTask: ApiBaseTask {
                 }
 
                 // if the episode is loaded into the player, and is currently paused record the up to time so we can seek there
-                if let playbackDelegate = ServerConfig.shared.playbackDelegate, playbackDelegate.isNowPlayingEpisode(episodeUuid: episode.uuid), !playbackDelegate.playing() {
+                if let playbackDelegate = ServerConfig.shared.playbackDelegate, playbackDelegate.isCurrentEpisode(uuid: episode.uuid), !playbackDelegate.isPlaying {
                     updatedNowPlayingTime = episode.playedUpTo
                 }
             } else {

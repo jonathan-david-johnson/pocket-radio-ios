@@ -28,32 +28,34 @@ struct WelcomeView: View {
                         .resizable()
                         .scaledToFit()
                         .frame(height: 108)
+                        .accessibilityHidden(true)
                     Text(L10n.tvWelcomeTitle)
                         .font(.title)
+                        .foregroundColor(Color.pcTextPrimary)
                     Text(L10n.tvWelcomeSubtitle)
                         .font(.headline)
-                        .foregroundColor(Color.textSecondary)
+                        .foregroundColor(Color.pcTextSecondary)
                         .padding(.bottom, 16)
                     HStack(spacing: 16) {
                         NavigationLink(value: Destination.signIn) {
-                            Text(L10n.tvWelcomeSignIn)
+                            Text(L10n.tvWelcomeLogIn)
                         }
+                        .simultaneousGesture(TapGesture().onEnded {
+                            Analytics.track(.setupAccountButtonTapped, properties: ["button": "sign_in"])
+                            Analytics.track(.signInShown)
+                        })
                         NavigationLink(value: Destination.createAccount) {
                             Text(L10n.tvWelcomeCreateFreeAccount)
                         }
+                        .simultaneousGesture(TapGesture().onEnded {
+                            Analytics.track(.setupAccountButtonTapped, properties: ["button": "create_account"])
+                        })
                     }
                     Spacer()
                     Button(L10n.tvWelcomeBrowseWithoutAccount) {
                         coordinator.state = .browsing
+                        Analytics.track(.browseNoAccountTapped)
                     }
-                }
-            }
-            .navigationDestination(for: Destination.self) { destination in
-                switch destination {
-                case .signIn:
-                    SignInView()
-                case .createAccount:
-                    CreateAccountView()
                 }
             }
             .background {
@@ -62,12 +64,33 @@ struct WelcomeView: View {
                     gradientView
                 }
             }
+            .navigationDestination(for: Destination.self) { destination in
+                ZStack {
+                    Color.pcBackgroundSurface
+                        .ignoresSafeArea()
+                    switch destination {
+                    case .signIn:
+                        SignInView()
+                    case .createAccount:
+                        CreateAccountView(style: .fullScreen)
+                    }
+                }
+            }
+        }
+        .background {
+            ZStack {
+                podcastGrid
+                gradientView
+            }
+        }
+        .task {
+            Analytics.track(.setupAccountShown)
         }
     }
 
-    var podcastRows: [[MockPodcast]] {
-        stride(from: 0, to: model.podcasts.count, by: Layout.columnsPerRow).map {
-            Array(model.podcasts[$0..<min($0 + Layout.columnsPerRow, model.podcasts.count)])
+    var podcastRows: [[String]] {
+        stride(from: 0, to: model.images.count, by: Layout.columnsPerRow).map {
+            Array(model.images[$0..<min($0 + Layout.columnsPerRow, model.images.count)])
         }
     }
 
@@ -75,8 +98,8 @@ struct WelcomeView: View {
         VStack(spacing: Layout.gridSpacing) {
             ForEach(Array(podcastRows.enumerated()), id: \.offset) { rowIndex, row in
                 HStack(spacing: Layout.gridSpacing) {
-                    ForEach(row) { podcast in
-                        Image(podcast.image)
+                    ForEach(Array(row.enumerated()), id: \.offset) { _, image in
+                        Image(image)
                             .resizable()
                             .frame(width: Layout.gridSize, height: Layout.gridSize)
                             .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -93,6 +116,7 @@ struct WelcomeView: View {
                 animating = true
             }
         }
+        .accessibilityHidden(true)
     }
 
     var gradientView: some View {
@@ -101,13 +125,14 @@ struct WelcomeView: View {
           .background(
             LinearGradient(
               stops: [
-                Gradient.Stop(color: Color.backgroundSurface, location: 0.00),
-                Gradient.Stop(color: Color.backgroundSurface.opacity(0.5), location: 1.00),
+                Gradient.Stop(color: Color.pcBackgroundSurface, location: 0.00),
+                Gradient.Stop(color: Color.pcBackgroundSurface.opacity(0.5), location: 1.00),
               ],
               startPoint: UnitPoint(x: 0.5, y: 0.45),
               endPoint: UnitPoint(x: 0.5, y: 0.17)
             )
           )
+          .accessibilityHidden(true)
     }
 }
 

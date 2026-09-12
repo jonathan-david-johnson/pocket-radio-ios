@@ -151,7 +151,6 @@ enum NotificationType: String {
                 return false
         }
     }
-
 }
 
 enum NotificationsGroup: CaseIterable {
@@ -316,7 +315,7 @@ enum NotificationsGroup: CaseIterable {
 
 class NotificationsCoordinator {
 
-    static let shared: NotificationsCoordinator = NotificationsCoordinator()
+    static let shared = NotificationsCoordinator()
 
     var debugMode: Bool = false
 
@@ -334,9 +333,11 @@ class NotificationsCoordinator {
                     continuation.resume(returning: false)
                     return
                 }
-                // activate all notifications
-                for group in NotificationsGroup.allCases {
-                    self.setupNotifications(for: group)
+                // Only activate all groups for a fresh setup; if the user already configured notifications, leave their per-group/per-podcast settings untouched.
+                if NotificationsGroup.allDisabled {
+                    for group in NotificationsGroup.allCases {
+                        self.setupNotifications(for: group)
+                    }
                 }
                 continuation.resume(returning: granted)
             }
@@ -383,7 +384,6 @@ class NotificationsCoordinator {
                     let date = intervalTrigger.nextTriggerDate() ?? Date()
                     FileLog.shared.addMessage("Notification: \(notificationRequest.identifier) - \(date.formatted())\n")
                 }
-
             }
             FileLog.shared.addMessage("\n---- End ----\n")
         }

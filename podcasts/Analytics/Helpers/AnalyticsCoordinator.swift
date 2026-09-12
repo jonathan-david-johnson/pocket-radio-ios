@@ -26,8 +26,10 @@ enum AnalyticsSource: String, AnalyticsDescribable {
     case episode
     case files
     case filters
+    case folder
     case incomingShareList = "incoming_share_list"
     case listeningHistory = "listening_history"
+    case liveActivity = "live_activity"
     case mediaType = "media_type"
     case miniplayer
     case noFiles = "no_files"
@@ -39,6 +41,7 @@ enum AnalyticsSource: String, AnalyticsDescribable {
     case playerPlaybackEffects = "player_playback_effects"
     case playerSkipForwardLongPress = "player_skip_forward_long_press"
     case podcastScreen = "podcast_screen"
+    case podcastScreenNetwork = "podcast_screen_network"
     case podcastScreenYouMightLike = "podcast_screen_you_might_like"
     case podcastSettings = "podcast_settings"
     case podcastsList = "podcasts_list"
@@ -61,6 +64,8 @@ enum AnalyticsSource: String, AnalyticsDescribable {
     case userSatisfactionSurvey = "user_satisfaction_survey"
     case recommendations
     case playlistEditor = "playlist_editor"
+    case home
+    case search
     case unknown
 
     var analyticsDescription: String { rawValue }
@@ -70,8 +75,15 @@ class AnalyticsCoordinator {
     /// Sometimes the playback source can't be inferred, just inform it here
     var currentSource: AnalyticsSource?
 
-    private var currentEpisodeIsVideo: Bool {
-        PlaybackManager.shared.currentEpisode()?.videoPodcast() ?? false
+    var currentEpisodeIsVideo: Bool {
+        // For HLS we can't tell synchronously whether the stream carries video — it isn't reflected
+        // in the episode's MIME type and is only detected once frames render — so assume video rather
+        // than mislabel it as audio. `willPlayViaHLS` is gated behind the HLS flag and only true when the
+        // current source is actually HLS, so this only affects analytics for real HLS playback.
+        if let episode = PlaybackManager.shared.currentEpisode, EpisodeManager.willPlayViaHLS(episode) {
+            return true
+        }
+        return PlaybackManager.shared.isCurrentEpisodeVideo()
     }
 
     var currentAnalyticsSource: AnalyticsSource {

@@ -11,3 +11,8 @@ CURRENT_PROJECT_VERSION = $(VERSION_LONG)
 PRODUCT_BUNDLE_IDENTIFIER_ROOT = com.jdj.pocketradio
 
 DEVELOPMENT_TEAM = 77WV2LMG2L // Personal: thuggler@gmail.com
+
+SECRETS_DIR = $(HOME)/.configure/pocketcasts-ios/secrets
+FIREBASE_SECRETS_PATH = $(SECRETS_DIR)/GoogleService-Info.plist
+CREDENTIALS_JSON_PATH = $(SECRETS_DIR)/pocket_casts_credentials.json
+GOOGLE_SIGN_IN_SECRETS_PATH = $(SECRETS_DIR)/GoogleSignIn.txt

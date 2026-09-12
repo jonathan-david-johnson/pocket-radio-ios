@@ -1,11 +1,11 @@
 import SwiftUI
-import Combine
 import PocketCastsServer
 
 @MainActor
 @Observable
 class SignInViewModel {
-    private var cancellable: AnyCancellable?
+    /// The QR / device-pairing flow, shared with the create-account screen.
+    let pairing = PairingSession()
 
     enum State: Equatable {
         static func == (lhs: SignInViewModel.State, rhs: SignInViewModel.State) -> Bool {
@@ -28,31 +28,20 @@ class SignInViewModel {
         case finished
     }
 
+    /// State of the manual username / password sign-in.
     var state: State = .start
-
-    var codes: [String] = ["J", "M", "R", "S", "3", "W"]
-
-    func signinWait() {
-        state = .waiting
-        cancellable = Timer.publish(every: 5.0, on: .main, in: .common)
-                    .autoconnect()
-                    .sink { [weak self] _ in
-                        guard let self else { return }
-                        state = .finished
-                    }
-    }
 
     func manualSignIn(username: String, password: String) async {
         state = .waiting
         do {
-            let response = try await AuthenticationHelper.validateLogin(username: username, password: password, scope: .mobile)
+            let response = try await AuthenticationHelper.validateLogin(username: username, password: password)
             if response.token != nil {
                 state = .finished
             }
         } catch let error as APIError {
             state = .error(error, error.localizedDescription)
         } catch {
-            state = .error(error, "Please try again")
+            state = .error(error, L10n.pleaseTryAgain)
         }
     }
 }

@@ -19,7 +19,12 @@ final class MainTabBarControllerTests: XCTestCase {
         let controller = MainTabBarController()
         controller.loadViewIfNeeded()
         XCTAssertEqual(controller.pcTabs.count, 5)
-        XCTAssertEqual(controller.viewControllers?.count, 5)
+
+        // Under Liquid Glass the mini player is added as a child of the tab bar
+        // controller (a tab accessory), so it shows up in `viewControllers`
+        // alongside the five tab navigation stacks. Count only the tab stacks.
+        let tabStacks = controller.viewControllers?.filter { $0 is UINavigationController } ?? []
+        XCTAssertEqual(tabStacks.count, 5)
     }
 
     func testNavigateToUpNextSelectsFilterTabAndUpNextSegment() {

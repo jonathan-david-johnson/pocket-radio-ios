@@ -14,6 +14,7 @@ extension NowPlayingPlayerItemViewController {
         addCustomObserver(Constants.Notifications.playbackPaused, selector: #selector(update(notification:)))
         addCustomObserver(Constants.Notifications.playbackTrackChanged, selector: #selector(playbackTrackChanged))
         addCustomObserver(Constants.Notifications.videoPlaybackEngineSwitched, selector: #selector(videoPlaybackEngineSwitched))
+        addCustomObserver(Constants.Notifications.videoRenderingToggled, selector: #selector(videoPlaybackEngineSwitched))
         addCustomObserver(Constants.Notifications.podcastChaptersDidUpdate, selector: #selector(update(notification:)))
         addCustomObserver(Constants.Notifications.googleCastStatusChanged, selector: #selector(update(notification:)))
         addCustomObserver(Constants.Notifications.playbackEffectsChanged, selector: #selector(update(notification:)))
@@ -43,22 +44,39 @@ extension NowPlayingPlayerItemViewController {
     }
 
     @objc private func videoPlaybackEngineSwitched() {
-        floatingVideoView.player = PlaybackManager.shared.internalPlayerForVideoPlayback()
+        // Video may have been detected at runtime (e.g. an HLS stream) or toggled via the shelf,
+        // so refresh to reveal or hide the view accordingly.
+        if PlaybackManager.shared.shouldRenderVideo() {
+            floatingVideoView.player = PlaybackManager.shared.internalPlayerForVideoPlayback()
+        }
+        update(notification: nil)
     }
 
     @objc func update(notification: NSNotification?) {
-        guard let playingEpisode = PlaybackManager.shared.currentEpisode() else { return }
+        guard let playingEpisode = PlaybackManager.shared.currentEpisode else { return }
 
-        if playingEpisode.videoPodcast() {
+        if PlaybackManager.shared.shouldRenderVideo() {
             if floatingVideoView.isHidden {
                 floatingVideoView.isHidden = false
                 floatingVideoView.player = PlaybackManager.shared.internalPlayerForVideoPlayback()
                 episodeImage.alpha = CGFloat.leastNonzeroMagnitude
             }
         } else {
+            let wasShowingVideo = !floatingVideoView.isHidden
             floatingVideoView.player = nil
             floatingVideoView.isHidden = true
             episodeImage.alpha = 1.0
+            episodeImage.layer.opacity = 1
+            // The player-open zoom transition (PlayerZoomAnimator) leaves the artwork subview at
+            // alpha 0 when the player opens with video showing, since the video covers it. Restore it
+            // here so the cover art reappears once video is turned off.
+            artworkImageView.alpha = 1
+            if wasShowingVideo {
+                // The artwork slot was invisible while the video was showing, so its aspect-fit
+                // subview may not have been laid out yet. Force a pass so the artwork (reloaded at
+                // the end of this method) appears the first time.
+                episodeImage.layoutIfNeeded()
+            }
         }
 
         let skipBackAmount = Settings.skipBackTime
@@ -69,7 +87,7 @@ extension NowPlayingPlayerItemViewController {
 
         updateSkipMuteSwap()
 
-        updatePlayPauseButton(isPlaying: PlaybackManager.shared.playing())
+        updatePlayPauseButton(isPlaying: PlaybackManager.shared.isPlaying)
         updateUpTo(upTo: PlaybackManager.shared.currentTime(), duration: PlaybackManager.shared.duration(), moveSlider: true)
         reloadShelfActions()
         updateChaptersControls()
@@ -92,12 +110,11 @@ extension NowPlayingPlayerItemViewController {
             } else {
                 // Strip any radio chrome we may have set previously so podcast
                 // art renders with its default XIB styling.
-                episodeImage.backgroundColor = .clear
-                episodeImage.layer.cornerRadius = 0
-                ImageManager.sharedManager.loadImage(episode: playingEpisode, imageView: episodeImage, size: .page)
+                artworkImageView.backgroundColor = .clear
+                ImageManager.sharedManager.loadImage(episode: playingEpisode, imageView: artworkImageView, size: .page)
             }
             #else
-            ImageManager.sharedManager.loadImage(episode: playingEpisode, imageView: episodeImage, size: .page)
+            ImageManager.sharedManager.loadImage(episode: playingEpisode, imageView: artworkImageView, size: .page)
             #endif
         }
     }
@@ -107,22 +124,22 @@ extension NowPlayingPlayerItemViewController {
     /// `radioTrackArtworkChanged(notification:)` will overwrite it with per-track
     /// art if/when a tracklist tick resolves one.
     private func applyRadioBaseArtwork(for station: RadioStation) {
-        episodeImage.kf.cancelDownloadTask()
+        artworkImageView.kf.cancelDownloadTask()
         episodeImage.isHidden = false
         episodeImage.alpha = 1.0
         episodeImage.layer.opacity = 1.0
+        artworkImageView.alpha = 1.0
         // Mirror StationDetailViewController's logoView chrome so the station
         // logo (often a dark glyph on transparent) is readable on the player's
         // dark background. Same gray rounded plate keeps the two surfaces in
-        // sync visually.
-        episodeImage.contentMode = .scaleAspectFit
-        episodeImage.backgroundColor = .secondarySystemBackground
-        episodeImage.layer.cornerRadius = 12
-        episodeImage.clipsToBounds = true
+        // sync visually. This lands on `artworkImageView`, the aspect-fitting
+        // inner view upstream added — `episodeImage` is now only the square slot.
+        artworkImageView.contentMode = .scaleAspectFit
+        artworkImageView.backgroundColor = .secondarySystemBackground
         if let asset = station.logoAsset, let image = UIImage(named: asset) {
-            episodeImage.image = image
+            artworkImageView.image = image
         } else {
-            episodeImage.image = ImageManager.sharedManager.placeHolderImage(.page)
+            artworkImageView.image = ImageManager.sharedManager.placeHolderImage(.page)
         }
     }
 
@@ -170,7 +187,7 @@ extension NowPlayingPlayerItemViewController {
                 }
 
                 if let url {
-                    self.episodeImage.kf.setImage(with: url, placeholder: self.episodeImage.image, options: [.transition(.fade(0.2))]) { [weak self] result in
+                    self.artworkImageView.kf.setImage(with: url, placeholder: self.artworkImageView.image, options: [.transition(.fade(0.2))]) { [weak self] result in
                         if case .failure = result {
                             self?.applyRadioBaseArtwork(for: radio)
                         }
@@ -212,7 +229,6 @@ extension NowPlayingPlayerItemViewController {
 
     @objc func updateChapterInfo() {
         updateChapterInfoWithChapters(PlaybackManager.shared.currentChapters())
-
     }
 
     private func updateChapterInfoForTime(_ time: TimeInterval) {
@@ -220,7 +236,7 @@ extension NowPlayingPlayerItemViewController {
     }
 
     private func updateChapterInfoWithChapters(_ chapters: Chapters) {
-        guard let playingEpisode = PlaybackManager.shared.currentEpisode() else { return }
+        guard let playingEpisode = PlaybackManager.shared.currentEpisode else { return }
         if let visibleChapter = chapters.visibleChapter, PlaybackManager.shared.chapterCount() != 0 {
             episodeInfoView.isHidden = true
             chapterInfoView.isHidden = false
@@ -233,12 +249,12 @@ extension NowPlayingPlayerItemViewController {
 
             if let artwork = chapters.artwork {
                 showingCustomImage = true
-                episodeImage.image = artwork
-                episodeImage.accessibilityLabel = L10n.playerArtwork(chapterName.text ?? "")
+                artworkImageView.image = artwork
+                artworkImageView.accessibilityLabel = L10n.playerArtwork(chapterName.text ?? "")
             } else if showingCustomImage {
                 showingCustomImage = false
-                ImageManager.sharedManager.loadImage(episode: playingEpisode, imageView: episodeImage, size: .page)
-                episodeImage.accessibilityLabel = L10n.playerArtwork(playingEpisode.title ?? "")
+                ImageManager.sharedManager.loadImage(episode: playingEpisode, imageView: artworkImageView, size: .page)
+                artworkImageView.accessibilityLabel = L10n.playerArtwork(playingEpisode.title ?? "")
             }
             chapterLink.isHidden = chapters.url == nil
         } else {
@@ -261,7 +277,7 @@ extension NowPlayingPlayerItemViewController {
     /// (initial load + chapter ticks) and from the radio notification
     /// observers (`radioTrackArtworkChanged`, `radioTracklistRefreshed`).
     func applyRadioTrackLabelsIfApplicable() {
-        guard let playingEpisode = PlaybackManager.shared.currentEpisode(),
+        guard let playingEpisode = PlaybackManager.shared.currentEpisode,
               let radio = PlaybackManager.shared.liveStation(for: playingEpisode) else { return }
 
         guard let enhancement = CuratedStationsLoader.enhancementsByUUID[radio.uuid],
@@ -286,7 +302,11 @@ extension NowPlayingPlayerItemViewController {
             return
         }
 
-        let remainingTime = chapter.duration + chapter.startTime.seconds - playheadPosition
+        // Current-chapter detection keys off the raw `startTime`, so the playhead
+        // can be inside the chapter's reference window but before its resolved
+        // playback start — clamp to [0, duration] so the ring can't run backwards
+        // or overshoot.
+        let remainingTime = min(chapter.duration, max(0, chapter.duration + chapter.effectiveStartTime - playheadPosition))
         chapterTimeLeftLabel.text = TimeFormatter.shared.singleUnitFormattedShortestTime(time: remainingTime)
         let percentageCompleted = 1 - (remainingTime / chapter.duration)
         chapterProgress.startingAngle = CGFloat((percentageCompleted * 360) - 90)
@@ -312,7 +332,7 @@ extension NowPlayingPlayerItemViewController {
             timeSlider.currentTime = upTo
         }
 
-        timeSlider.indeterminant = PlaybackManager.shared.buffering() && PlaybackManager.shared.playing()
+        timeSlider.indeterminant = PlaybackManager.shared.isBuffering && PlaybackManager.shared.isPlaying
     }
 
     var isErrorVisible: Bool {
@@ -324,7 +344,7 @@ extension NowPlayingPlayerItemViewController {
             hideError()
             return
         }
-        guard PlaybackManager.shared.currentEpisode() != nil,
+        guard PlaybackManager.shared.currentEpisode != nil,
               let error = PlaybackManager.shared.activeError else {
             hideError()
             return
@@ -383,7 +403,7 @@ extension NowPlayingPlayerItemViewController {
     }
 
     func updateProvisionalChapterInfoForTime(time: TimeInterval) {
-        guard let playingEpisode = PlaybackManager.shared.currentEpisode() else { return }
+        guard let playingEpisode = PlaybackManager.shared.currentEpisode else { return }
 
         if PlaybackManager.shared.chapterCount() == 0 {
             return
@@ -415,7 +435,7 @@ extension NowPlayingPlayerItemViewController {
     // MARK: - Progress
 
     @objc func progressUpdated() {
-        if timeSlider.isScrubbing() || PlaybackManager.shared.isSeeking() { return }
+        if timeSlider.isScrubbing() || PlaybackManager.shared.isSeeking { return }
 
         updateUpTo(upTo: PlaybackManager.shared.currentTime(), duration: PlaybackManager.shared.duration(), moveSlider: true)
 

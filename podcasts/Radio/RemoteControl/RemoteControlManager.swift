@@ -184,8 +184,8 @@ class RemoteControlManager {
 
     private func trackPresence(channel: RealtimeChannelV2) async {
         let pm = PlaybackManager.shared
-        let episode = pm.currentEpisode()
-        let playing = pm.playing()
+        let episode = pm.currentEpisode
+        let playing = pm.isPlaying
 
         let playbackState: String
         if episode == nil {
@@ -236,7 +236,7 @@ class RemoteControlManager {
 
     private func sendLoadStationIfTargeted() {
         guard let targetId = activeTargetDeviceId else { return }
-        guard let station = PlaybackManager.shared.currentEpisode() as? RadioStation else { return }
+        guard let station = PlaybackManager.shared.currentEpisode as? RadioStation else { return }
         send(command: "load_station", to: targetId, payload: RemoteCommandPayload(
             stationId: station.uuid,
             stationUrl: station.streamUrl,
@@ -246,7 +246,7 @@ class RemoteControlManager {
 
     private func sendPlayPauseIfTargeted(playing: Bool) {
         guard let targetId = activeTargetDeviceId else { return }
-        guard PlaybackManager.shared.currentEpisode() is RadioStation else { return }
+        guard PlaybackManager.shared.currentEpisode is RadioStation else { return }
         send(command: playing ? "play" : "pause", to: targetId)
     }
 

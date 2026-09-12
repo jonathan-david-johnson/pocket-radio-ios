@@ -2,13 +2,12 @@ import Combine
 import UIKit
 import SwiftUI
 import PocketCastsDataModel
-import PocketCastsDependencyInjection
 import PocketCastsUtils
 
 class NewPlaylistCell: ThemeableCell {
     typealias NewPlaylistCellType = NewPlaylistCellViewModel.DisplayType
 
-    @Dependency(\.playlistMetadataLoader) var playlistMetadataLoader: PlaylistMetadataLoader
+    let playlistMetadataLoader = PlaylistMetadataLoader.shared
 
     lazy var artworkImageSource: UIView = {
         let view = UIView()
@@ -38,7 +37,7 @@ class NewPlaylistCell: ThemeableCell {
 
         accessoryType = .disclosureIndicator
 
-        self.style = .primaryUi01
+        self.style = .primaryUi02
         iconStyle = .primaryIcon02
 
         updateColor()
@@ -49,7 +48,11 @@ class NewPlaylistCell: ThemeableCell {
         layoutMargins = .zero
         preservesSuperviewLayoutMargins = false
 
-        self.contentConfiguration = UIHostingConfiguration { NewPlaylistCellView(viewModel: viewModel).environmentObject(Theme.sharedTheme) }
+        self.contentConfiguration = UIHostingConfiguration {
+            NewPlaylistCellView(viewModel: viewModel)
+                .environmentObject(Theme.sharedTheme)
+        }
+        .margins(.vertical, 12)
 
         addSubview(artworkImageSource)
         addSubview(separatorView)
@@ -61,7 +64,7 @@ class NewPlaylistCell: ThemeableCell {
             artworkImageSource.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
 
             separatorView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            separatorView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16.0),
+            separatorView.leadingAnchor.constraint(equalTo: leadingAnchor),
             separatorView.trailingAnchor.constraint(equalTo: trailingAnchor),
             separatorView.heightAnchor.constraint(equalToConstant: 1.0)
         ])

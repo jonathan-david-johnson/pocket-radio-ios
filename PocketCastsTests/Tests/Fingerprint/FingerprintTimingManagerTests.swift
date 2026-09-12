@@ -269,4 +269,102 @@ final class FingerprintTimingManagerTests: XCTestCase {
         XCTAssertEqual(first, 100.0, accuracy: 0.001)
         XCTAssertEqual(last, 200.0, accuracy: 0.001)
     }
+
+    // MARK: - Matched-content gate (highlight opt-in)
+
+    // Dense anchors on real content (every ~2s) → always within matched content.
+    private static let denseContent: [Entry] = stride(from: 0.0, through: 60.0, by: 2.0)
+        .map { Entry(playbackTime: $0, referenceTime: $0) }
+
+    func testMatchedOnDenselyMappedContent() {
+        XCTAssertTrue(FingerprintTimingManager.isWithinMatchedContent(forPlaybackTime: 30, in: Self.denseContent))
+    }
+
+    func testMatchedBridgesQuickGapBetweenAnchors() {
+        // A short sparse stretch (a "quick red" the matcher couldn't anchor) still
+        // sits between two close committed anchors, so it counts as matched.
+        let entries = [Entry(playbackTime: 20, referenceTime: 20), Entry(playbackTime: 26, referenceTime: 26)]
+        XCTAssertTrue(FingerprintTimingManager.isWithinMatchedContent(forPlaybackTime: 23, in: entries))
+    }
+
+    func testNotMatchedInWideGap() {
+        // A 30s gap between anchors is an ad break: not matched content.
+        let entries = [Entry(playbackTime: 20, referenceTime: 20), Entry(playbackTime: 50, referenceTime: 21)]
+        XCTAssertFalse(FingerprintTimingManager.isWithinMatchedContent(forPlaybackTime: 35, in: entries))
+    }
+
+    func testNotMatchedPastLastAnchor() {
+        // Playback has run past the newest anchor (e.g. into an ad whose far side
+        // isn't anchored yet) — no anchor ahead, so don't highlight.
+        let entries = [Entry(playbackTime: 18, referenceTime: 18), Entry(playbackTime: 20, referenceTime: 20)]
+        XCTAssertFalse(FingerprintTimingManager.isWithinMatchedContent(forPlaybackTime: 40, in: entries))
+    }
+
+    func testNotMatchedBeforeFirstAnchor() {
+        let entries = [Entry(playbackTime: 18, referenceTime: 18), Entry(playbackTime: 20, referenceTime: 20)]
+        XCTAssertFalse(FingerprintTimingManager.isWithinMatchedContent(forPlaybackTime: 5, in: entries))
+    }
+
+    func testNotMatchedWithEmptyMapping() {
+        XCTAssertFalse(FingerprintTimingManager.isWithinMatchedContent(forPlaybackTime: 10, in: []))
+    }
+
+    func testMatchedFlipsImmediatelyAtLastAnchorBeforeAd() {
+        // Anchors up to 14 (ad start), next committed anchor only after the ad at 44.
+        // Just before 14 we're matched; the instant we cross it the bracket widens
+        // to 14→44 and we stop — no lag.
+        let entries = [
+            Entry(playbackTime: 12, referenceTime: 12),
+            Entry(playbackTime: 14, referenceTime: 14),
+            Entry(playbackTime: 44, referenceTime: 15),
+            Entry(playbackTime: 45, referenceTime: 16)
+        ]
+        XCTAssertTrue(FingerprintTimingManager.isWithinMatchedContent(forPlaybackTime: 13.9, in: entries))
+        XCTAssertFalse(FingerprintTimingManager.isWithinMatchedContent(forPlaybackTime: 14.1, in: entries))
+    }
+
+    // MARK: - On-demand chapter seek: search-window bounds
+
+    func testColdSearchWindowStartsAtReferenceAndUsesColdBudget() {
+        // No prior mapping — search forward from the raw reference time.
+        let window = FingerprintTimingManager.searchWindow(referenceTime: 600, estimatedPlayback: nil)
+        XCTAssertEqual(window.start, 600, accuracy: 0.001)
+        XCTAssertEqual(window.end, 600 + FingerprintConstants.onDemandSeekColdBudgetSeconds, accuracy: 0.001)
+    }
+
+    func testWarmSearchWindowCentersOnEstimateWithinBudgets() {
+        // Warm prior with a large accumulated offset, so `estimate - backwardMax`
+        // stays above the reference time and the window brackets the estimate on
+        // both sides rather than clamping to the reference time.
+        let referenceTime = 600.0
+        let estimate = 900.0 // 300s of accumulated ad offset (> backwardMax)
+        let window = FingerprintTimingManager.searchWindow(referenceTime: referenceTime, estimatedPlayback: estimate)
+        XCTAssertEqual(window.start, estimate - FingerprintConstants.onDemandSeekBackwardMaxSeconds, accuracy: 0.001)
+        XCTAssertEqual(window.end, estimate + FingerprintConstants.onDemandSeekForwardBudgetSeconds, accuracy: 0.001)
+    }
+
+    func testWarmSearchWindowNeverStartsBelowReferenceTime() {
+        // Ad offset is non-negative, so even when the backward budget would push
+        // the start below the reference time it must clamp to the reference time.
+        let referenceTime = 30.0
+        let estimate = 40.0 // small offset; estimate - backwardMax << referenceTime
+        let window = FingerprintTimingManager.searchWindow(referenceTime: referenceTime, estimatedPlayback: estimate)
+        XCTAssertEqual(window.start, referenceTime, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(window.end, window.start)
+    }
+
+    // MARK: - On-demand chapter seek: isolation from the continuous mapping
+
+    func testChapterResolveDoesNotMutateContinuousMapping() {
+        // The one-shot resolve must never touch `main`. Seed the continuous
+        // mapping, cancel any pending resolve (a no-op here), and assert the
+        // committed mapping is unchanged and still queryable.
+        let manager = FingerprintTimingManager()
+        manager.stubMatches((0..<5).map { i in Entry(playbackTime: Double(i) * 2, referenceTime: Double(i) * 2) })
+
+        manager.cancelPendingChapterResolve()
+
+        XCTAssertEqual(try XCTUnwrap(manager.referenceTime(forPlaybackTime: 4)), 4, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(manager.playbackTime(forReferenceTime: 6)), 6, accuracy: 0.001)
+    }
 }

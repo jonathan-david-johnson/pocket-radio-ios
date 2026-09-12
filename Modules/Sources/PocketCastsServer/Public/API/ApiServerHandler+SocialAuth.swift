@@ -33,11 +33,23 @@ public extension ASAuthorizationAppleIDProvider.CredentialState {
 
 public enum AuthenticationScope: String {
     case mobile
+    case tv
     case sonos
+
+    /// The scope to use by default depending on the build target.
+    /// tvOS targets authenticate using the `.tv` scope, while every other
+    /// target (iOS, watchOS, etc.) uses the `.mobile` scope.
+    public static var `default`: AuthenticationScope {
+        #if os(tvOS)
+        return .tv
+        #else
+        return .mobile
+        #endif
+    }
 }
 
 public extension ApiServerHandler {
-    func validateLogin(identityToken: String?, scope: AuthenticationScope = .mobile) async throws -> AuthenticationResponse {
+    func validateLogin(identityToken: String?, scope: AuthenticationScope = .default) async throws -> AuthenticationResponse {
         guard let identityToken,
               let request = tokenRequest(identityToken: identityToken, scope: scope)
         else {
@@ -70,7 +82,7 @@ public extension ApiServerHandler {
         return try await obtainToken(request: request, usingRefreshToken: true)
     }
 
-    private func tokenRequest(identityToken: String?, cachePolicy: URLRequest.CachePolicy = .useProtocolCachePolicy, timeoutInterval: TimeInterval = 15.seconds, scope: AuthenticationScope = .mobile) -> URLRequest? {
+    private func tokenRequest(identityToken: String?, cachePolicy: URLRequest.CachePolicy = .useProtocolCachePolicy, timeoutInterval: TimeInterval = 15.seconds, scope: AuthenticationScope = .default) -> URLRequest? {
         guard let identityToken else {
             return nil
         }
@@ -83,7 +95,6 @@ public extension ApiServerHandler {
         data.scope = scope.rawValue
 
         return ServerHelper.createProtoRequest(url: url, data: try! data.serializedData())
-
     }
 
     private func tokenRequest(identityToken: String?, cachePolicy: URLRequest.CachePolicy = .useProtocolCachePolicy, timeoutInterval: TimeInterval = 15.seconds, provider: SocialAuthProvider) -> URLRequest? {

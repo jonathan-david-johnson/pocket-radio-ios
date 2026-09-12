@@ -27,26 +27,16 @@ class NotificationsHelper: NSObject, UNUserNotificationCenterDelegate {
     }
 
     @objc func pushEnabled() -> Bool {
-        if FeatureFlag.newSettingsStorage.enabled {
-            SettingsStore.appSettings.notifications
-        } else {
-            UserDefaults.standard.bool(forKey: Constants.UserDefaults.pushEnabled)
-        }
+        UserDefaults.standard.bool(forKey: Constants.UserDefaults.pushEnabled)
     }
 
     func enablePush() {
         if pushEnabled() { return } // already enabled
 
-        if FeatureFlag.newSettingsStorage.enabled {
-            SettingsStore.appSettings.notifications = true
-        }
         UserDefaults.standard.set(true, forKey: Constants.UserDefaults.pushEnabled)
     }
 
     func disablePush() {
-        if FeatureFlag.newSettingsStorage.enabled {
-            SettingsStore.appSettings.notifications = false
-        }
         UserDefaults.standard.removeObject(forKey: Constants.UserDefaults.pushEnabled)
     }
 
@@ -57,6 +47,26 @@ class NotificationsHelper: NSObject, UNUserNotificationCenterDelegate {
               checkToken == false || ServerSettings.pushToken() == nil
         else { return }
         registerForPushNotifications()
+    }
+
+    /// Handles a user-initiated change to per-podcast push notifications: requests permission if needed, persists the change, notifies observers, and shows a confirmation toast. Callers are responsible for tracking their own analytics event.
+    func setNotificationsEnabled(_ enabled: Bool, for podcast: Podcast) {
+        registerForPushNotifications { granted in
+            guard granted || !enabled else {
+                Toast.show(L10n.notificationsPermissionsNeedsAction, actions: [.init(title: L10n.notificationsPermissionsOpenSettings, action: {
+                    Analytics.track(.notificationsPermissionsOpenSystemSettings)
+                    UIApplication.shared.openNotificationSettings()
+                })])
+                return
+            }
+            PodcastManager.shared.setNotificationsEnabled(podcast: podcast, enabled: enabled)
+            NotificationCenter.postOnMainThread(notification: Constants.Notifications.podcastUpdated, object: podcast.uuid)
+            var message = enabled ? L10n.notificationsOn : L10n.notificationsOff
+            if let title = podcast.title, enabled {
+                message = L10n.notificationsOnForPodcast(title)
+            }
+            Toast.show(message)
+        }
     }
 
     func registerForPushNotifications(completion: ((Bool) -> ())? = nil) {

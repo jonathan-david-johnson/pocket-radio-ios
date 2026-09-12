@@ -12,7 +12,7 @@ extension PlayRadioStationIntent {
 
         // Sampled before the starter runs: if this toggles pause, playPause()
         // flips this value, so the label must reflect the pre-toggle state.
-        let wasPlayingBeforeToggle = PlaybackManager.shared.playing()
+        let wasPlayingBeforeToggle = PlaybackManager.shared.isPlaying
 
         guard let result = await RadioPlaybackStarter.shared.play(stationId: stationId, source: .interactiveWidget) else {
             FileLog.shared.addMessage("PlayRadioStationIntent error: station not resolvable: \(stationId)")

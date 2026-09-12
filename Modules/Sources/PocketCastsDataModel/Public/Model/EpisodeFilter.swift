@@ -4,9 +4,6 @@ import GRDBMacros
 
 @GRDBRecord(table: "SJFilteredPlaylist")
 public class EpisodeFilter: NSObject {
-    @objc public static let iconTypeCount = 8
-    @objc public static let iconsPerType = 5
-
     @objc public var id = 0 as Int64
     @objc public var autoDownloadEpisodes = false
     @objc public var customIcon = 0 as Int32
@@ -52,6 +49,22 @@ public class EpisodeFilter: NSObject {
 
     override public init() {}
 
+    /// A new filter pre-populated with the default "match everything" rules used when creating a playlist.
+    /// Callers set the name, sort position, and any distinguishing fields (e.g. `manual`, `sortType`).
+    public static func makeDefault() -> EpisodeFilter {
+        let filter = EpisodeFilter()
+        filter.uuid = UUID().uuidString
+        filter.syncStatus = SyncStatus.notSynced.rawValue
+        filter.filterAllPodcasts = true
+        filter.filterUnplayed = true
+        filter.filterPartiallyPlayed = true
+        filter.filterFinished = true
+        filter.filterDownloaded = true
+        filter.filterNotDownloaded = true
+        filter.filterAudioVideoType = AudioVideoFilter.all.rawValue
+        return filter
+    }
+
     public func setTitle(_ title: String?, defaultTitle: String) {
         guard let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             playlistName = defaultTitle
@@ -72,6 +85,14 @@ public class EpisodeFilter: NSObject {
 
     public func deletingFileRemovesItem() -> Bool {
         !filterDownloaded
+    }
+
+    /// Whether an episode's download status decides if it belongs to this playlist.
+    public var filtersByDownloadStatus: Bool {
+        let allStatuses = filterDownloaded && filterDownloading && filterNotDownloaded
+        let anyStatus = filterDownloaded || filterDownloading || filterNotDownloaded
+
+        return !allStatuses && anyStatus
     }
 
     public func addPodcast(podcastUuid: String) {

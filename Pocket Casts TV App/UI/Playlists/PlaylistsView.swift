@@ -1,13 +1,21 @@
 import SwiftUI
+import PocketCastsDataModel
+import PocketCastsServer
 
 struct PlaylistsView: View {
     @Environment(AppCoordinator.self) var coordinator
-    @Environment(MainTabRouter.self) var tabRouter: MainTabRouter
+    @Environment(MainTabViewModel.self) var tabRouter: MainTabViewModel
+    @Environment(\.requireAccount) private var requireAccount
 
-    @State private var model = PlaylistsViewModel()
+    @State private var model: PlaylistsViewModel
+    @State private var showDownloadModal = false
 
     enum Layout {
         static let gridSize = CGFloat(496)
+    }
+
+    init(model: PlaylistsViewModel) {
+        _model = State(wrappedValue: model)
     }
 
     var body: some View {
@@ -21,8 +29,13 @@ struct PlaylistsView: View {
                 emptyView
             }
         }
+        .animation(.easeInOut, value: model.state)
+        .sheet(isPresented: $showDownloadModal) {
+            DownloadAppModal()
+        }
         .task {
-            model.load()
+            await model.load()
+            Analytics.track(.filterListShown, properties: ["filter_count": model.playlists.count])
         }
     }
 
@@ -30,22 +43,37 @@ struct PlaylistsView: View {
         ProgressView()
     }
 
+    @State private var path = StackPath()
     var playlistsView: some View {
-        NavigationStack {
+        NavigationStack(path: $path.navigationPath) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 40) {
                     Text(L10n.tvTabPlaylists)
                         .font(.title2)
-                        .foregroundStyle(Color.textPrimary)
+                        .foregroundStyle(Color.pcTextPrimary)
                     playlistsCollection
                 }
             }
+            .navigationDestination(for: DiscoverPodcast.self) { podcast in
+                if let uuid = podcast.uuid {
+                    PodcastDetailView(model: PodcastDetailViewModel(podcastUuid: uuid))
+                }
+            }
         }
+        .syncNavigationDetail(path: path.navigationPath, tabRouter: tabRouter)
+        .environment(path)
     }
 
     var emptyView: some View {
-        EmptyDataView(title: L10n.tvPlaylistsEmptyTitle, subtitle: L10n.tvPlaylistsEmptySubtitle, actionTitle: L10n.tvPlaylistsEmptyActionTitle) {
-            tabRouter.selectedTab = .home
+        ContentUnavailableView {
+            Text(L10n.tvPlaylistsEmptyTitle)
+        } description: {
+            Text(L10n.tvPlaylistsEmptySubtitle)
+        } actions: {
+            Button(L10n.tvPlaylistsEmptyActionTitle) {
+                Analytics.track(.filterCreateButtonTapped)
+                showDownloadModal = true
+            }
         }
     }
 
@@ -66,14 +94,14 @@ struct PlaylistsView: View {
             }
         })
         .focusScope(listNamespace)
-        .navigationDestination(for: MockPlaylist.self) { playlist in
-            PlaylistDetailView(model: PlaylistDetailsViewModel(playlist: playlist))
+        .navigationDestination(for: PlaylistItem.self) { playlist in
+            PlaylistDetailView(model: PlaylistDetailsViewModel(playlist: playlist, detail: true))
         }
     }
 }
 
 #Preview {
-    PlaylistsView()
+    PlaylistsView(model: PlaylistsViewModel())
         .environment(AppCoordinator())
-        .environment(MainTabRouter())
+        .environment(MainTabViewModel())
 }

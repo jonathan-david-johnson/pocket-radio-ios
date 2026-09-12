@@ -39,7 +39,6 @@ class MultiSelectActionController: UIViewController, UITableViewDelegate, UITabl
             editButton.setTitle(L10n.edit, for: .normal)
             editButton.titleLabel?.font = UIFont.font(ofSize: 15, weight: .bold, scalingWith: .largeTitle)
             editButton.titleLabel?.adjustsFontForContentSizeCategory = true
-
         }
     }
 
@@ -126,7 +125,7 @@ class MultiSelectActionController: UIViewController, UITableViewDelegate, UITabl
 
         let cell = tableView.dequeueReusableCell(withIdentifier: actionCellId, for: indexPath) as! MultiSelectActionCell
 
-        cell.nameLabel.text = action.title()
+        cell.nameLabel.text = action.title(isUpNextContext: actionDelegate.multiSelectedPlayListEpisodes() != nil)
         cell.iconView.image = UIImage(named: action.iconName())
         cell.iconView.tintColor = AppTheme.colorForStyle(.primaryInteractive01, themeOverride: themeOverride)
         cell.style = .primaryUi01

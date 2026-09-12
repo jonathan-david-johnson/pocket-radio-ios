@@ -9,7 +9,10 @@ import SwiftUI
 
 class MainTabBarController: UITabBarController, NavigationProtocol {
 
-    enum Tab: Int { case podcasts, filter, discover, profile, streams }
+    // `upNext` is not in `pcTabs` — this fork hosts Up Next inside the filter tab
+    // via `PlaylistsHostViewController`. The case exists so upstream's Up Next tab
+    // item and badge code keeps compiling; `firstIndex(of: .upNext)` is always nil.
+    enum Tab: Int { case podcasts, filter, discover, profile, streams, upNext }
 
     var pcTabs = [Tab]()
 
@@ -17,7 +20,30 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
 
     lazy var endOfYear = EndOfYear()
 
-    private lazy var profileTabBarItem = UITabBarItem(title: L10n.profile, image: UIImage(named: "profile_tab"), tag: pcTabs.firstIndex(of: .profile) ?? -1)
+    /// Styles its badge as a plain red dot on the item itself, since Liquid Glass ignores the tab bar
+    /// appearance that does it for the older tab bar.
+    private lazy var profileTabBarItem: UITabBarItem = {
+        let item = UITabBarItem(title: L10n.profile, image: UIImage(named: "profile_tab"), tag: pcTabs.firstIndex(of: .profile) ?? -1)
+        item.badgeColor = .clear
+        item.setBadgeTextAttributes([.foregroundColor: UIColor.systemRed], for: .normal)
+        item.setBadgeTextAttributes([.foregroundColor: UIColor.systemRed], for: .selected)
+        return item
+    }()
+
+    private lazy var upNextTabBarItem = UITabBarItem(title: L10n.upNext, image: UIImage(named: "upnext_tab"), tag: pcTabs.firstIndex(of: .upNext) ?? -1)
+
+    /// The last Up Next count rendered into the tab, used to pulse the tab only
+    /// when the queue actually changes (not on every refresh notification).
+    private var previousUpNextCount: Int?
+
+    /// Keeps the account-creation modal off the same launch that just showed initial onboarding.
+    private var didPresentInitialOnboardingThisLaunch = false
+
+    /// `true` while the Up Next "pulse" spring is in flight, so a burst of
+    /// rapid adds doesn't stack overlapping transforms on the target (the tab
+    /// button, or the mini player artwork when minimized).
+    /// Not `private`: set from the pulse code in `+Animations`.
+    var isPulsingUpNextTarget = false
 
 
     /// The viewDidAppear can trigger more than once per lifecycle, setting this flag on the first did appear prevents use from prompting more than once per lifecycle. But still wait until the tab bar has appeared to do so.
@@ -81,6 +107,14 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     override func viewDidLoad() {
         super.viewDidLoad()
 
+        registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitHorizontalSizeClass.self]) { (controller: MainTabBarController, _) in
+            if let scene = controller.view.window?.windowScene {
+                Theme.systemIsDark = (scene.traitCollection.userInterfaceStyle == .dark)
+            }
+            controller.fixTarBarTraitCollectionOnIpadForiOS18()
+            controller.fireSystemThemeMayHaveChanged()
+        }
+
         fixTarBarTraitCollectionOnIpadForiOS18()
 
         pcTabs = [.podcasts, .filter, .discover, .streams, .profile]
@@ -91,11 +125,7 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
         podcastsController.tabBarItem = UITabBarItem(title: L10n.podcastsPlural, image: UIImage(named: "podcasts_tab"), tag: pcTabs.firstIndex(of: .podcasts)!)
 
         let filtersViewController = PlaylistsHostViewController()
-        if FeatureFlag.playlistsRebranding.enabled {
-            filtersViewController.tabBarItem = UITabBarItem(title: L10n.playlists, image: UIImage(named: "playlists_tab"), tag: pcTabs.firstIndex(of: .filter)!)
-        } else {
-            filtersViewController.tabBarItem = UITabBarItem(title: L10n.filters, image: UIImage(named: "filters_tab"), tag: pcTabs.firstIndex(of: .filter)!)
-        }
+        filtersViewController.tabBarItem = UITabBarItem(title: L10n.playlists, image: UIImage(named: "playlists_tab"), tag: pcTabs.firstIndex(of: .filter)!)
 
         let discoverViewController = DiscoverCollectionViewController(coordinator: DiscoverCoordinator())
 
@@ -156,14 +186,23 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
         NotificationCenter.default.addObserver(self, selector: #selector(textEditingDidEnd), name: Constants.Notifications.textEditingDidEnd, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleFollowSystemThemeTurnedOn), name: Constants.Notifications.followSystemThemeTurnedOn, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(willEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(unhideNavBar), name: Constants.Notifications.unhideNavBarRequested, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(profileSeen), name: Constants.Notifications.profileSeen, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(refreshProfileTabAvatar), name: .userLoginDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(refreshProfileTabAvatarForcingReload), name: Constants.Notifications.avatarNeedsRefreshing, object: nil)
         refreshProfileTabAvatar()
 
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshUpNextTabBadge), name: Constants.Notifications.upNextQueueChanged, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshUpNextTabBadge), name: Constants.Notifications.upNextEpisodeRemoved, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshUpNextTabBadge), name: Constants.Notifications.playbackTrackChanged, object: nil)
+        // `upNextEpisodeAdded` refreshes the badge via the genie animation's tail, not here.
+        NotificationCenter.default.addObserver(self, selector: #selector(animateEpisodeAddedToUpNext(_:)), name: Constants.Notifications.upNextEpisodeAdded, object: nil)
+        refreshUpNextTabBadge()
+
+        observeWhatsNewFeed()
+
         observersForEndOfYearStats()
         addBookmarkCreatedToastHandler()
+        addBookmarkEnrichmentHandler()
         if FeatureFlag.displayErrorsOnPlayer.enabled {
             setupErrorBanner()
             setupErrorObservers()
@@ -172,34 +211,29 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
 
     private var cancellables = Set<AnyCancellable>()
 
+    private var systemAppearanceObservation: Any?
+
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
 
+        registerSceneAppearanceObserverIfNeeded()
         fireSystemThemeMayHaveChanged()
-        checkSubscriptionStatusChanged()
-        checkPromotionFinishedAcknowledged()
-        checkWhatsNewAcknowledged()
-
-        // Show any app launch announcements/prompts only once
-        if !viewDidAppearBefore {
-            showWhatsNewIfNeeded()
-            showEndOfYearPromptIfNeeded()
-
-            viewDidAppearBefore = true
-        }
 
         // if this key was never set lets default to Discovery or Podcast depending of podcasts followed
         if UserDefaults.standard.object(forKey: Constants.UserDefaults.lastTabOpened) == nil {
             selectedIndex = DataManager.sharedManager.podcastCount() > 0 ? Tab.podcasts.rawValue: Tab.discover.rawValue
         }
 
-        showInitialOnboardingIfNeeded()
-
         updateDatabaseIndexes()
         optimizeDatabaseIfNeeded()
 
-        if DataManager.loginAgain {
-            loginAgain()
+        let isFirstAppearance = !viewDidAppearBefore
+        viewDidAppearBefore = true
+
+        // This can run inside the deferred-commit flush of a modal dismissal, where
+        // presenting or dismissing runs into the transition that is still tearing down.
+        DispatchQueue.main.async { [weak self] in
+            self?.showLaunchPromptsIfNeeded(isFirstAppearance: isFirstAppearance)
         }
     }
 
@@ -243,19 +277,30 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     }
 
     private func showInitialOnboardingIfNeeded() {
-        // Show if the user is not logged in and has never seen the prompt before
-        if SyncManager.isUserLoggedIn() || (Settings.shouldShowInitialOnboardingFlow == false && Settings.hasSeenInitialOnboardingBefore == true) {
+        if SyncManager.isUserLoggedIn() {
             return
         }
 
-        if FeatureFlag.encourageAccountCreation.enabled,
-           !Settings.hasShownInformationalViewModal,
-           Settings.hasSeenInitialOnboardingBefore,
-           (UIApplication.shared.delegate as? AppDelegate)?.appInstallState == .updated {
-            NavigationManager.sharedManager.navigateTo(NavigationManager.onboardingFlow, data: ["flow": OnboardingFlow.Flow.encourageAccountCreation])
-        } else {
-            NavigationManager.sharedManager.navigateTo(NavigationManager.onboardingFlow, data: ["flow": OnboardingFlow.Flow.initialOnboarding])
+        // Recurring account-creation modal targets logged-out users who completed initial onboarding:
+        // first eligible launch, then every 60 days.
+        let hasCompletedInitialOnboarding = Settings.shouldShowInitialOnboardingFlow == false && Settings.hasSeenInitialOnboardingBefore == true
+        if hasCompletedInitialOnboarding {
+            // Don't chain into the modal on the same launch we showed onboarding — it'd re-trigger
+            // here since `shouldShowInitialOnboardingFlow` flips false immediately. Shows next launch.
+            guard !didPresentInitialOnboardingThisLaunch else { return }
+
+            // Don't dismiss a presented modal (e.g. What's New) to show EAC — that would burn its
+            // announcement. Skips EAC for this launch; the next launch retries.
+            guard presentedViewController == nil else { return }
+
+            if Settings.shouldShowEncourageAccountCreationModal() {
+                NavigationManager.sharedManager.navigateTo(NavigationManager.onboardingFlow, data: ["flow": OnboardingFlow.Flow.encourageAccountCreation])
+            }
+            return
         }
+
+        didPresentInitialOnboardingThisLaunch = true
+        NavigationManager.sharedManager.navigateTo(NavigationManager.onboardingFlow, data: ["flow": OnboardingFlow.Flow.initialOnboarding])
 
         // Set the flag so the user won't see the on launch flow again
         Settings.shouldShowInitialOnboardingFlow = false
@@ -276,16 +321,11 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
         }
     }
 
-    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
-        super.traitCollectionDidChange(previousTraitCollection)
-        fixTarBarTraitCollectionOnIpadForiOS18()
-        fireSystemThemeMayHaveChanged()
-    }
-
     @objc func themeDidChange() {
         updateTabBarColor()
         updateErrorColor()
         setNeedsStatusBarAppearanceUpdate()
+        refreshUpNextTabBadge()
     }
 
     private func setupMiniPlayer() {
@@ -325,6 +365,10 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
             let tab = pcTabs[tabIndex]
             trackTabOpened(tab)
             AnalyticsHelper.tabSelected(tab: tab)
+        }
+
+        if item === profileTabBarItem, FeatureFlag.whatsNewFeed.enabled {
+            WhatsNewManager.shared.markFeedAsSeen()
         }
 
         UserDefaults.standard.set(tabIndex, forKey: Constants.UserDefaults.lastTabOpened)
@@ -636,6 +680,12 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
         }
     }
 
+    func showApproveDevice(code: String?) {
+        guard let controller = view.window?.rootViewController else { return }
+        let vc = ThemedHostingController(rootView: DeviceApproveView(userCode: code, model: DeviceApproveViewModel(presentingViewController: controller)))
+        controller.present(vc, animated: true)
+    }
+
     func navigateToFilterTab() {
         switchToTab(.filter)
     }
@@ -666,8 +716,8 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
             let appearanceViewController = AppearanceViewController()
             navController.pushViewController(appearanceViewController, animated: !showThemeSelection)
             if showThemeSelection {
-                appearanceViewController.presentThemePicker(selectedTheme: Theme.preferredLightTheme()) { [weak self] theme in
-                    Theme.setPreferredLightTheme(theme, systemIsDark: self?.traitCollection.userInterfaceStyle == .dark)
+                appearanceViewController.presentThemePicker(selectedTheme: Theme.preferredLightTheme()) { theme in
+                    Theme.setPreferredLightTheme(theme, systemIsDark: Theme.systemIsDark)
                 }
             }
         }
@@ -775,14 +825,18 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     }
 
     func showOnboardingFlow(flow: OnboardingFlow.Flow?) {
-        let controller = OnboardingFlow.shared.begin(flow: flow ?? .initialOnboarding, source: .onboarding)
-        guard let presentedViewController else {
-            present(controller, animated: true)
-            return
-        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
 
-        presentedViewController.dismiss(animated: true) {
-            self.present(controller, animated: true)
+            let controller = OnboardingFlow.shared.begin(flow: flow ?? .initialOnboarding, source: .onboarding)
+            guard let presentedViewController = self.presentedViewController else {
+                self.present(controller, animated: true)
+                return
+            }
+
+            presentedViewController.dismiss(animated: true) {
+                self.present(controller, animated: true)
+            }
         }
     }
 
@@ -814,8 +868,12 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
 
     // MARK: - End of Year
 
+    /// Whether End of Year has a badge waiting on the Profile tab, which it shares with What's New.
+    private var showsEndOfYearBadge = false
+
     @objc private func profileSeen() {
-        profileTabBarItem.badgeValue = nil
+        showsEndOfYearBadge = false
+        updateProfileTabBadge()
         if let year = endOfYear.storyModelType?.year {
             Settings.setShowBadgeForEndOfYear(false, year: year)
         }
@@ -865,9 +923,15 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     // MARK: - End of Year
 
     private func updateTabBarColor() {
+        tabBar.unselectedItemTintColor = AppTheme.unselectedTabBarItemColor()
+        tabBar.tintColor = AppTheme.tabBarItemTintColor()
+
+        // Liquid Glass renders its own translucent material, so skip the opaque
+        // background appearance below — but the theme tint above must still apply.
         guard !LiquidGlass.isEnabled else { return }
 
         self.view.backgroundColor = AppTheme.viewBackgroundColor()
+
         let appearance = UITabBarAppearance()
         appearance.configureWithOpaqueBackground()
         appearance.backgroundColor = AppTheme.tabBarBackgroundColor()
@@ -883,13 +947,12 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
 
         tabBar.standardAppearance = appearance
         tabBar.scrollEdgeAppearance = appearance
-        tabBar.unselectedItemTintColor = AppTheme.unselectedTabBarItemColor()
-        tabBar.tintColor = AppTheme.tabBarItemTintColor()
     }
 
     private func displayEndOfYearBadgeIfNeeded() {
         if EndOfYear.isEligible, let year = endOfYear.storyModelType?.year, Settings.showBadgeForEndOfYear(year) {
-            profileTabBarItem.badgeValue = "●"
+            showsEndOfYearBadge = true
+            updateProfileTabBadge()
         }
     }
 
@@ -898,22 +961,30 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
         checkSubscriptionStatusChanged()
     }
 
+    // The window's `overrideUserInterfaceStyle` masks system appearance changes
+    // from view controllers inside it, so `traitCollectionDidChange` never fires
+    // for system light/dark flips. Observe at the scene level instead — scene
+    // traits aren't affected by the per-window override.
+    private func registerSceneAppearanceObserverIfNeeded() {
+        guard systemAppearanceObservation == nil,
+              LiquidGlass.isEnabled,
+              let scene = view.window?.windowScene else { return }
+        systemAppearanceObservation = scene.registerForTraitChanges(
+            [UITraitUserInterfaceStyle.self]
+        ) { [weak self] (scene: UIWindowScene, _: UITraitCollection) in
+            Theme.systemIsDark = (scene.traitCollection.userInterfaceStyle == .dark)
+            self?.fireSystemThemeMayHaveChanged()
+        }
+    }
+
     private var lastNotifiedAboutDark: Bool?
     private func fireSystemThemeMayHaveChanged() {
         if !Settings.shouldFollowSystemTheme() { return } // if the user has turned this off, then ignore system theme changes
 
-        let style = traitCollection.userInterfaceStyle
-
-        let isDark = (style == .dark)
+        let isDark = Theme.systemIsDark
         if lastNotifiedAboutDark == nil || isDark != lastNotifiedAboutDark {
             lastNotifiedAboutDark = isDark
             NotificationCenter.postOnMainThread(notification: Constants.Notifications.systemThemeMayHaveChanged, object: isDark)
-        }
-    }
-
-    @objc private func unhideNavBar() {
-        if let navController = selectedViewController as? UINavigationController {
-            navController.setNavigationBarHidden(false, animated: true)
         }
     }
 
@@ -979,40 +1050,72 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
 // MARK: - Bookmarks
 
 private extension MainTabBarController {
+    /// The edit sheet, where a bookmark is normally titled, only opens over the full screen player
+    /// with the app in the foreground — see `BookmarksPlayerTabController`. A bookmark made from a
+    /// transcript selection is the exception: the transcript opens the sheet itself, wherever it's
+    /// shown from, so those are filtered out below rather than covered here.
+    static var showsBookmarkEditSheet: Bool {
+        UIApplication.shared.applicationState == .active
+        && !CarPlayHelper.isConnectedToCarPlay
+        && NavigationManager.sharedManager.miniPlayer?.playerOpenState != .closed
+    }
+
+    /// Generates the title and passage for the bookmarks that are never shown the edit sheet:
+    /// the ones made with a headphone button, in CarPlay, or while the app is in the background
+    func addBookmarkEnrichmentHandler() {
+        let bookmarkManager = PlaybackManager.shared.bookmarkManager
+
+        bookmarkManager.onBookmarkCreated
+            .receive(on: RunLoop.main)
+            .filter { !$0.isDuplicate && $0.source != .transcript && !Self.showsBookmarkEditSheet }
+            .compactMap { event in
+                bookmarkManager.bookmark(for: event.uuid).map { ($0, event.source) }
+            }
+            .sink { (bookmark: Bookmark, source: BookmarkAnalyticsSource) in
+                Task {
+                    await bookmarkManager.enrich(bookmark, source: source)
+                }
+            }
+            .store(in: &cancellables)
+    }
+
     // Shows a toast notification when a bookmark is created and we're not in the full screen player
     func addBookmarkCreatedToastHandler() {
         let bookmarkManager = PlaybackManager.shared.bookmarkManager
 
         bookmarkManager.onBookmarkCreated
             .receive(on: RunLoop.main)
-            .filter { _ in
-                UIApplication.shared.applicationState == .active
+            .filter { event in
+                event.source != .transcript
+                && UIApplication.shared.applicationState == .active
                 && !CarPlayHelper.isConnectedToCarPlay
                 && NavigationManager.sharedManager.miniPlayer?.playerOpenState == .closed
             }
             .compactMap { event in
-                bookmarkManager.bookmark(for: event.uuid)
+                bookmarkManager.bookmark(for: event.uuid).map { ($0, event.source) }
             }
-            .sink { [weak self] bookmark in
-                self?.showToast(for: bookmark)
+            .sink { [weak self] bookmark, source in
+                self?.showToast(for: bookmark, source: source)
             }
             .store(in: &cancellables)
     }
 
-    func showToast(for bookmark: Bookmark) {
+    func showToast(for bookmark: Bookmark, source: BookmarkAnalyticsSource) {
         let bookmarkManager = PlaybackManager.shared.bookmarkManager
 
         let title = bookmark.title
         let message = title == L10n.bookmarkDefaultTitle ? L10n.bookmarkAdded : L10n.bookmarkAddedNotification(title)
 
         let action = Toast.Action(title: L10n.changeBookmarkTitle) { [weak self] in
-            let controller = BookmarkEditTitleViewController(manager: bookmarkManager, bookmark: bookmark, state: .updating, onDismiss: { [weak self] updatedTitle, _ in
-                guard title != updatedTitle else { return }
+            // Re-read: a generated title may have been saved since the toast was shown
+            let bookmark = bookmarkManager.bookmark(for: bookmark.uuid) ?? bookmark
+            let title = bookmark.title
+
+            let controller = BookmarkEditTitleViewController(manager: bookmarkManager, bookmark: bookmark, state: .updating, style: .themed, source: source, onDismiss: { [weak self] outcome in
+                guard case .saved(let updatedTitle) = outcome, title != updatedTitle else { return }
 
                 self?.handleBookmarkTitleUpdated(updatedTitle: updatedTitle)
             })
-
-            controller.source = .headphones
 
             self?.presentFromRootController(controller)
         }
@@ -1035,7 +1138,6 @@ private extension MainTabBarController {
             }
         }
     }
-
 }
 
 // MARK: - Analytics
@@ -1058,6 +1160,8 @@ private extension MainTabBarController {
             event = .profileTabOpened
         case .streams:
             return
+        case .upNext:
+            return // not a tab in this fork; Up Next lives inside the filter tab
         }
 
         Analytics.track(event, properties: ["initial": isInitial])
@@ -1067,6 +1171,24 @@ private extension MainTabBarController {
 // MARK: - App Launch Prompts
 
 private extension MainTabBarController {
+    func showLaunchPromptsIfNeeded(isFirstAppearance: Bool) {
+        checkSubscriptionStatusChanged()
+        checkPromotionFinishedAcknowledged()
+        checkWhatsNewAcknowledged()
+
+        // Show any app launch announcements/prompts only once
+        if isFirstAppearance {
+            showWhatsNewIfNeeded()
+            showEndOfYearPromptIfNeeded()
+        }
+
+        showInitialOnboardingIfNeeded()
+
+        if DataManager.loginAgain {
+            loginAgain()
+        }
+    }
+
     func showEndOfYearPromptIfNeeded() {
         // Only show the prompt if there isn't an active announcement flow
         guard !isShowingWhatsNew, AnnouncementFlow.current == .none else { return }
@@ -1089,6 +1211,9 @@ private extension MainTabBarController {
 extension MainTabBarController {
 
     func showNotificationsPermissions() {
+        // Present inline so it beats the `.onboardingFlowDidDismiss` EOY prompt; skip only when
+        // another flow is already presenting, since we can't stack on it.
+        guard presentedViewController == nil else { return }
         present(NotificationsPermissionsViewModel.makeController(), animated: true)
     }
 }
@@ -1227,7 +1352,7 @@ private extension MainTabBarController {
     }
 
     func loadProfileTabAvatar(forceRefresh: Bool) {
-        guard FeatureFlag.liquidGlass.enabled, #available(iOS 26.0, *) else { return }
+        guard #available(iOS 26.0, *) else { return }
 
         guard let email = ServerSettings.syncingEmail(), !email.isEmpty,
               let url = URL(string: "https://www.gravatar.com/avatar/\(email.sha256)?d=404&s=256") else {
@@ -1252,5 +1377,68 @@ private extension MainTabBarController {
     func resetProfileTabImage() {
         profileTabBarItem.image = UIImage(named: "profile_tab")
         profileTabBarItem.selectedImage = nil
+    }
+}
+
+// MARK: - Up Next tab badge
+
+extension MainTabBarController {
+    @objc func refreshUpNextTabBadge() {
+        guard #available(iOS 26.0, *) else { return }
+
+        // Clamping lives in `composeUpNextTabImage`; track the true count here.
+        let count = PlaybackManager.shared.queue.upNextCount()
+        let previous = previousUpNextCount
+        previousUpNextCount = count
+
+        // Nothing to redraw if the count didn't move. The composed image is a
+        // template, so the tab bar re-tints it on theme changes for free — no
+        // rebuild needed there either.
+        guard count != previous else { return }
+
+        guard count > 0 else {
+            resetUpNextTabImage()
+            return
+        }
+
+        // A template image so the tab bar tints it like every other item.
+        upNextTabBarItem.image = Self.composeUpNextTabImage(count: count)
+        upNextTabBarItem.selectedImage = Self.composeUpNextTabImage(count: count, isSelected: true)
+
+        // Only celebrate the queue growing — a drain (playing/removing) shouldn't pop.
+        if previous.map({ count > $0 }) ?? false { pulseUpNextTarget() }
+    }
+
+    func resetUpNextTabImage() {
+        upNextTabBarItem.image = UIImage(named: "upnext_tab")
+        upNextTabBarItem.selectedImage = nil
+    }
+}
+
+// MARK: - What's New
+
+private extension MainTabBarController {
+    /// Keeps the dot on the Profile tab in step with the feed: it shows while the feed has an unread
+    /// message the tab hasn't pointed the user at, and tapping the tab takes it off.
+    func observeWhatsNewFeed() {
+        guard FeatureFlag.whatsNewFeed.enabled else { return }
+
+        let manager = WhatsNewManager.shared
+        Publishers.Merge3(
+            manager.$catalog.map { _ in },
+            manager.$readState.map { _ in },
+            NotificationCenter.default.publisher(for: ServerNotifications.subscriptionStatusChanged).map { _ in }
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] _ in
+            self?.updateProfileTabBadge()
+        }
+        .store(in: &cancellables)
+    }
+
+    /// Shows the dot while End of Year or What's New has something waiting on Profile.
+    func updateProfileTabBadge() {
+        let showsWhatsNewBadge = FeatureFlag.whatsNewFeed.enabled && WhatsNewManager.shared.hasUnseenMessages()
+        profileTabBarItem.badgeValue = showsEndOfYearBadge || showsWhatsNewBadge ? "●" : nil
     }
 }

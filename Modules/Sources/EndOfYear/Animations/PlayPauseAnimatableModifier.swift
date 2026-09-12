@@ -1,7 +1,7 @@
 import SwiftUI
 
 public class PlayPauseAnimationViewModel: ObservableObject {
-    @Published private(set) public var paused = true
+    @Published public private(set) var paused = true
 
     private var duration: TimeInterval
 
@@ -76,7 +76,7 @@ public struct PlayPauseAnimatableModifier: AnimatableModifier {
 
     public func body(content: Content) -> some View {
         content
-            .onChange(of: viewModel.paused) { _ in
+            .onChange(of: viewModel.paused) {
                 playOrPause()
             }
     }

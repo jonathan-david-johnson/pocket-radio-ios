@@ -34,19 +34,19 @@
                                 <constraint firstAttribute="width" constant="16" id="oLI-aa-OY3"/>
                             </constraints>
                         </imageView>
-                        <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="104 Files 104 Files 104 Files" lineBreakMode="tailTruncation" numberOfLines="0" baselineAdjustment="alignBaselines" adjustsFontForContentSizeCategory="YES" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="IIo-c4-fKC" userLabel="Files" customClass="ThemeableLabel" customModule="podcasts" customModuleProvider="target">
+                        <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="104 Files 104 Files 104 Files" lineBreakMode="tailTruncation" numberOfLines="0" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="IIo-c4-fKC" userLabel="Files" customClass="ThemeableLabel" customModule="podcasts" customModuleProvider="target">
                             <rect key="frame" x="32" y="0.0" width="113" height="62"/>
                             <fontDescription key="fontDescription" type="system" weight="semibold" pointSize="12"/>
                             <nil key="textColor"/>
                             <nil key="highlightedColor"/>
                         </label>
-                        <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="1.5 GB / 2GB 1.5 GB / 2GB" textAlignment="right" lineBreakMode="clip" numberOfLines="0" baselineAdjustment="alignBaselines" adjustsFontForContentSizeCategory="YES" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="RKx-9X-OVA" userLabel="GB" customClass="ThemeableLabel" customModule="podcasts" customModuleProvider="target">
+                        <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="1.5 GB / 2GB 1.5 GB / 2GB" textAlignment="right" lineBreakMode="clip" numberOfLines="0" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="RKx-9X-OVA" userLabel="GB" customClass="ThemeableLabel" customModule="podcasts" customModuleProvider="target">
                             <rect key="frame" x="153" y="0.0" width="112.5" height="62"/>
                             <fontDescription key="fontDescription" type="system" weight="semibold" pointSize="12"/>
                             <nil key="textColor"/>
                             <nil key="highlightedColor"/>
                         </label>
-                        <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="88% Full" textAlignment="right" lineBreakMode="tailTruncation" numberOfLines="0" baselineAdjustment="alignBaselines" adjustsFontForContentSizeCategory="YES" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="MQ8-3w-fa2" userLabel="Percentage" customClass="ThemeableLabel" customModule="podcasts" customModuleProvider="target">
+                        <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="88% Full" textAlignment="right" lineBreakMode="tailTruncation" numberOfLines="0" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="MQ8-3w-fa2" userLabel="Percentage" customClass="ThemeableLabel" customModule="podcasts" customModuleProvider="target">
                             <rect key="frame" x="273.5" y="0.0" width="93.5" height="62"/>
                             <fontDescription key="fontDescription" type="system" weight="semibold" pointSize="12"/>
                             <nil key="textColor"/>
@@ -118,7 +118,7 @@
                 <constraint firstAttribute="bottom" secondItem="6oY-Pd-rYs" secondAttribute="bottom" id="4i7-07-ybP"/>
                 <constraint firstItem="6oY-Pd-rYs" firstAttribute="leading" secondItem="iN0-l3-epB" secondAttribute="leading" id="8ab-Hg-gxg"/>
                 <constraint firstItem="P40-lj-z0V" firstAttribute="leading" secondItem="iN0-l3-epB" secondAttribute="leading" id="AzG-jW-f67"/>
-                <constraint firstItem="f3w-Vu-PhP" firstAttribute="top" secondItem="P40-lj-z0V" secondAttribute="bottom" constant="-1" id="JHU-Eh-Msk"/>
+                <constraint firstAttribute="bottom" secondItem="f3w-Vu-PhP" secondAttribute="bottom" id="JHU-Eh-Msk"/>
                 <constraint firstAttribute="trailing" secondItem="f3w-Vu-PhP" secondAttribute="trailing" id="WK3-xZ-K46"/>
                 <constraint firstItem="6oY-Pd-rYs" firstAttribute="top" secondItem="iN0-l3-epB" secondAttribute="top" id="btB-cC-6r1"/>
                 <constraint firstAttribute="bottom" secondItem="P40-lj-z0V" secondAttribute="bottom" id="kPB-9I-Bsu"/>

@@ -5,14 +5,17 @@ class TopLevelSettingsCell: ThemeableCell {
     @IBOutlet var settingsLabel: UILabel! {
         didSet {
             settingsLabel.font = UIFont.font(ofSize: 16.0, scalingWith: .callout)
+            settingsLabel.adjustsFontForContentSizeCategory = true
         }
     }
     @IBOutlet var plusIndicator: UIImageView!
 
     private var disclosureImageView: TintableImageView?
+    private var unreadIndicator: UIView?
 
     private let baseSettingsImageSize: CGFloat = 24
     private let baseDisclosureSize: CGFloat = 32
+    private let baseUnreadIndicatorSize: CGFloat = 8
 
     var showsDisclosureIndicator = true {
         didSet {
@@ -25,8 +28,23 @@ class TopLevelSettingsCell: ThemeableCell {
         }
     }
 
+    /// Whether the row shows a dot for something new behind it, such as a What's New message that
+    /// arrived since the feed was last opened.
+    var showsUnreadIndicator = false {
+        didSet {
+            if showsUnreadIndicator, unreadIndicator == nil {
+                setupUnreadIndicator()
+            }
+            unreadIndicator?.isHidden = !showsUnreadIndicator
+        }
+    }
+
     override func awakeFromNib() {
         super.awakeFromNib()
+
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (view: TopLevelSettingsCell, _) in
+            view.updateSize()
+        }
 
         setupDisclosureImageView()
         settingsLabel.setContentCompressionResistancePriority(.defaultHigh, for: .vertical)
@@ -45,12 +63,23 @@ class TopLevelSettingsCell: ThemeableCell {
         accessoryView = imageView
     }
 
-    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
-        super.traitCollectionDidChange(previousTraitCollection)
+    private func setupUnreadIndicator() {
+        let indicator = UIView()
+        indicator.translatesAutoresizingMaskIntoConstraints = false
+        indicator.isUserInteractionEnabled = false
+        indicator.backgroundColor = ThemeColor.support05()
+        contentView.addSubview(indicator)
 
-        if traitCollection.preferredContentSizeCategory != previousTraitCollection?.preferredContentSizeCategory {
-            updateSize()
-        }
+        NSLayoutConstraint.activate([
+            indicator.widthAnchor.constraint(equalToConstant: baseUnreadIndicatorSize),
+            indicator.heightAnchor.constraint(equalToConstant: baseUnreadIndicatorSize),
+            indicator.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            indicator.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            indicator.leadingAnchor.constraint(greaterThanOrEqualTo: plusIndicator.trailingAnchor, constant: 8)
+        ])
+
+        unreadIndicator = indicator
+        updateSize()
     }
 
     private func updateSize() {
@@ -63,9 +92,14 @@ class TopLevelSettingsCell: ThemeableCell {
 
         let disclosureSize = max(baseDisclosureSize, metric.scaledValue(for: baseDisclosureSize))
         disclosureImageView?.frame.size = CGSize(width: disclosureSize, height: disclosureSize)
+
+        let unreadIndicatorSize = max(baseUnreadIndicatorSize, UIFontMetrics(forTextStyle: .caption2).scaledValue(for: baseUnreadIndicatorSize))
+        unreadIndicator?.updateSizeConstraints(to: unreadIndicatorSize)
+        unreadIndicator?.layer.cornerRadius = unreadIndicatorSize / 2
     }
 
     override func handleThemeDidChange() {
         settingsImage.tintColor = ThemeColor.primaryIcon01()
+        unreadIndicator?.backgroundColor = ThemeColor.support05()
     }
 }

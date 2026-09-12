@@ -8,6 +8,10 @@ struct EditFolderView: View {
 
     @State var showingDeleteConfirmation = false
 
+    var navBarTint: Color? {
+        ThemeColor.navBarTint(ThemeColor.secondaryIcon01(for: theme.activeTheme))
+    }
+
     var body: some View {
         NavigationView {
             VStack(alignment: .leading) {
@@ -18,7 +22,7 @@ struct EditFolderView: View {
                         .padding(.bottom, -8)
                         .padding(.top, 30)
                     TextField("", text: $model.name)
-                        .onChange(of: model.name, perform: model.validateFolderName)
+                        .onChange(of: model.name) { _, newValue in model.validateFolderName(newValue) }
                         .themedTextField()
                 }
                 .padding(.bottom, 10)
@@ -73,7 +77,7 @@ struct EditFolderView: View {
                         dismissAction(false)
                     } label: {
                         Image("close")
-                            .foregroundColor(ThemeColor.secondaryIcon01(for: theme.activeTheme).color)
+                            .foregroundColor(navBarTint)
                     }
                     .accessibilityLabel(L10n.close)
                 }

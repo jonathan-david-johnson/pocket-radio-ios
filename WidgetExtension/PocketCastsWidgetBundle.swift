@@ -12,5 +12,6 @@ struct PocketCastsWidgetBundle: WidgetBundle {
         AppIconWidget()
         UpNextLockScreenWidget()
         PocketRadioWidget()
+        SleepTimerLiveActivityWidget()
     }
 }

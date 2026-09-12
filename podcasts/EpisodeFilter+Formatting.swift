@@ -8,21 +8,6 @@ import EndOfYear
 #endif
 
 extension EpisodeFilter {
-    #if !os(watchOS) && !os(tvOS)
-        class func indexOf(color: UIColor) -> Int {
-            if AppTheme.playlistRedColor().isEqual(color) {
-                return 0
-            } else if AppTheme.playlistBlueColor().isEqual(color) {
-                return 1
-            } else if AppTheme.playlistGreenColor().isEqual(color) {
-                return 2
-            } else if AppTheme.playlistPurpleColor().isEqual(color) {
-                return 3
-            }
-
-            return 4
-        }
-    #endif
     func iconImage() -> UIImage? {
         guard let icon = PlaylistIcon(rawValue: customIcon) else { return nil }
 
@@ -46,29 +31,6 @@ extension EpisodeFilter {
 
         return EpisodeFilter.imageName(forPlaylistIcon: icon)
     }
-
-    #if !os(watchOS) && !os(tvOS)
-        func iconImageNameCarPlay() -> String {
-            guard let regularName = iconImageName() else { return "" }
-
-            var name = "car_\(regularName)"
-
-            let color = playlistColor()
-            if color == AppTheme.playlistRedColor() {
-                name += "_red"
-            } else if color == AppTheme.playlistGreenColor() {
-                name += "_green"
-            } else if color == AppTheme.playlistYellowColor() {
-                name += "_yellow"
-            } else if color == AppTheme.playlistPurpleColor() {
-                name += "_purple"
-            } else {
-                name += "_blue" // default to blue
-            }
-
-            return name
-        }
-    #endif
 
     #if !os(watchOS) && !APPCLIP && !os(tvOS)
     @MainActor func grid() -> UIImage {
@@ -126,17 +88,7 @@ extension EpisodeFilter {
         return nil
     }
 
-    #if !os(watchOS) && !os(tvOS)
-        func setPlaylistColor(color: UIColor) {
-            let currentIcon = Int(customIcon)
-            let currentIconRow = Int(currentIcon / EpisodeFilter.iconsPerType)
-            let newIcon = (currentIconRow * EpisodeFilter.iconsPerType) + EpisodeFilter.indexOf(color: color)
-
-            customIcon = Int32(newIcon)
-            syncStatus = SyncStatus.notSynced.rawValue
-            DataManager.sharedManager.save(playlist: self)
-        }
-
+    #if !os(watchOS)
         func playlistColor() -> UIColor {
             AppTheme.colorForStyle(playlistStyle())
         }
@@ -164,7 +116,7 @@ extension EpisodeFilter {
     }
 
     func episodeUuidToAddToQueries() -> String? {
-        if let playingEpisode = PlaybackManager.shared.currentEpisode(), PlaybackManager.shared.uuidOfPlayingList == uuid {
+        if let playingEpisode = PlaybackManager.shared.currentEpisode, PlaybackManager.shared.uuidOfPlayingList == uuid {
             return playingEpisode.uuid
         }
 

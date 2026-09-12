@@ -126,7 +126,7 @@ class IAPHelper: NSObject {
     }
 
     func showManageSubscriptions(in windowScene: UIWindowScene) async throws {
-        if let groupID = await findLastSubscriptionPurchased()?.subscriptionGroupID, #available(iOS 17.0, *) {
+        if let groupID = await findLastSubscriptionPurchased()?.subscriptionGroupID {
             FileLog.shared.console("[CancelConfirmationViewModel] Last subscription purchased group ID: \(groupID)")
 
             try await StoreKit.AppStore.showManageSubscriptions(in: windowScene, subscriptionGroupID: groupID)
@@ -206,11 +206,15 @@ class IAPHelper: NSObject {
         return formattedPrice ?? ""
     }
 
-    public func buyProduct(identifier: IAPProductID, discount: IAPDiscountInfo? = nil) -> Bool {
+    /// - Parameter source: analytics source that triggered the purchase, persisted now so it can
+    ///   be attached when the transaction completes. Defaults to the current `OnboardingFlow` source.
+    public func buyProduct(identifier: IAPProductID, discount: IAPDiscountInfo? = nil, source: PlusUpgradeViewSource? = nil) -> Bool {
         guard settings.isLoggedIn, let product = getProduct(for: identifier) else {
             FileLog.shared.addMessage("IAPHelper Failed to initiate purchase of \(identifier)")
             return false
         }
+
+        storePurchaseSource(source ?? OnboardingFlow.shared.source, for: identifier)
 
         FileLog.shared.addMessage("IAPHelper Buying \(product.productIdentifier)")
         let payment = SKMutablePayment(product: product)
@@ -221,6 +225,27 @@ class IAPHelper: NSObject {
         SKPaymentQueue.default().add(payment)
 
         return true
+    }
+
+    // MARK: - Purchase source persistence
+
+    /// Persisted `[product id: source raw value]`, so an async purchase keeps its source across relaunches.
+    private static let pendingPurchaseSourcesKey = "IAPPendingPurchaseSources"
+
+    private func storePurchaseSource(_ source: PlusUpgradeViewSource?, for productId: IAPProductID) {
+        guard let source else { return }
+        var sources = UserDefaults.standard.dictionary(forKey: Self.pendingPurchaseSourcesKey) as? [String: String] ?? [:]
+        sources[productId.rawValue] = source.rawValue
+        UserDefaults.standard.set(sources, forKey: Self.pendingPurchaseSourcesKey)
+    }
+
+    /// Removes and returns the raw source for a product. Raw (not via `PlusUpgradeViewSource`) so
+    /// attribution survives enum changes while a transaction is pending. `nil` if none was recorded.
+    private func consumePurchaseSource(for productId: IAPProductID) -> String? {
+        var sources = UserDefaults.standard.dictionary(forKey: Self.pendingPurchaseSourcesKey) as? [String: String] ?? [:]
+        guard let rawValue = sources.removeValue(forKey: productId.rawValue) else { return nil }
+        UserDefaults.standard.set(sources, forKey: Self.pendingPurchaseSourcesKey)
+        return rawValue
     }
 
     public func getPaymentFrequency(for identifier: IAPProductID) -> String {
@@ -664,13 +689,16 @@ private extension IAPHelper {
             }
         }
 
-        var properties: [AnyHashable: Any] = ["product": productId.rawValue,
+        var properties: [String: Sendable] = ["product": productId.rawValue,
                                               "offer_type": offerType,
                                               "tier": productId.subscriptionTier.rawValue.lowercased(),
                                               "frequency": productId.frequency.rawValue]
-        if let source = OnboardingFlow.shared.source {
-            properties["source"] = source.rawValue
-        }
+
+        // Always defined: captured-at-initiation source, else current flow source, else `.unattributed`.
+        let source = consumePurchaseSource(for: productId)
+            ?? OnboardingFlow.shared.source?.rawValue
+            ?? PlusUpgradeViewSource.unattributed.rawValue
+        properties["source"] = source
 
         let flow = OnboardingFlow.shared.currentFlow
         properties["flow"] = flow.rawValue

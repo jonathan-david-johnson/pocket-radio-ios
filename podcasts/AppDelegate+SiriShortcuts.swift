@@ -7,6 +7,7 @@ import PocketCastsUtils
 
 extension AppDelegate {
     func application(_ application: UIApplication, continue userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void) -> Bool {
+
         handleContinue(userActivity)
 
         return true
@@ -40,6 +41,14 @@ extension AppDelegate {
 
             if path == "/discover" || path.startsWith(string: "/discover/") {
                 if let url = URL(string: "pktc:/\(path)") {
+                    NavigationManager.sharedManager.dismissPresentedViewController()
+                    JLRoutes.routeURL(url)
+                }
+                return
+            }
+
+            if path == "/pair" || path.startsWith(string: "/pair/") {
+                if let url = URL(string: "pktc:/\(path)?\(components.query ?? "")") {
                     NavigationManager.sharedManager.dismissPresentedViewController()
                     JLRoutes.routeURL(url)
                 }
@@ -93,11 +102,6 @@ extension AppDelegate {
             handleOpenFilterIntent(intent: intent as! SJOpenFilterIntent)
         } else if intent is SJChapterIntent {
             handleChapterIntent(intent: intent as! SJChapterIntent)
-        } else if intent is SJSleepTimerIntent {
-            let timerIntent = intent as! SJSleepTimerIntent
-            if let minutes = timerIntent.minutes {
-                _ = SiriShortcutsManager.shared.sleepTimer(newTime: Int(truncating: minutes))
-            }
         } else if intent is SJExtendSleepTimerIntent {
             let timerIntent = intent as! SJExtendSleepTimerIntent
             if let minutes = timerIntent.minutes {
@@ -166,6 +170,8 @@ extension AppDelegate {
                 responseCode = SiriShortcutsManager.shared.skipToNextChapter()
             } else if identifier == Constants.SiriActions.previousChapterId {
                 responseCode = SiriShortcutsManager.shared.skipToPreviousChapter()
+            } else if identifier == Constants.SiriActions.markAsPlayedId {
+                responseCode = SiriShortcutsManager.shared.markAsPlayed()
             } else {
                 responseCode = SiriShortcutsManager.shared.resumePlayback()
             }
@@ -180,6 +186,8 @@ extension AppDelegate {
                         responseCode = SiriShortcutsManager.shared.playPodcast(uuid: uuid)
                     }
                 }
+            } else if thisIntent.resumePlayback == true, thisIntent.playbackRepeatMode == .one {
+                responseCode = SiriShortcutsManager.shared.resumePlayback()
             }
         }
 

@@ -43,6 +43,13 @@ class NowPlayingHelper {
         let playingInfo = nowPlayingInfo(for: episode, currentChapters: currentChapters)
         var nowPlayingInfoWithProgress = NowPlayingHelper.addUpToInformationToNowPlaying(playingInfo, duration: duration, upTo: upTo, playbackRate: playbackRate)
 
+        if let chapterArtwork = currentChapters.artwork {
+            let artwork = MPMediaItemArtwork(boundsSize: chapterArtwork.size, requestHandler: { _ in chapterArtwork })
+            nowPlayingInfoWithProgress[MPMediaItemPropertyArtwork] = artwork
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfoWithProgress
+            return
+        }
+
         let size = ImageManager.sizeFor(imageSize: .page)
 
         #if !os(watchOS) && !APPCLIP && !os(tvOS)
@@ -117,7 +124,7 @@ class NowPlayingHelper {
                 DispatchQueue.main.async {
                     // Bail if the station has since changed — a fast switch must
                     // never paint a stale favicon onto the new station.
-                    guard PlaybackManager.shared.currentEpisode()?.uuid == stationId else { return }
+                    guard PlaybackManager.shared.currentEpisode?.uuid == stationId else { return }
                     setArtworkImage(image)
                 }
             }
@@ -175,7 +182,7 @@ class NowPlayingHelper {
         // Every radio write goes through here, including track changes mid-song.
         // Restate the rate from real playback state so a metadata refresh can
         // never leave the button showing Play while audio is running.
-        info[MPNowPlayingInfoPropertyPlaybackRate] = NSNumber(value: PlaybackManager.shared.playing() ? 1.0 : 0.0)
+        info[MPNowPlayingInfoPropertyPlaybackRate] = NSNumber(value: PlaybackManager.shared.isPlaying ? 1.0 : 0.0)
     }
 
     /// Preserve song title/artist/album across a full info-dict rebuild, but only
@@ -264,7 +271,7 @@ class NowPlayingHelper {
         var nowPlayingInfo = [String: AnyObject]()
 
         nowPlayingInfo[MPMediaItemPropertyMediaType] = NSNumber(value: MPMediaType.podcast.rawValue)
-        let nowPlayingMediaType = episode.videoPodcast() ? MPNowPlayingInfoMediaType.video.rawValue : MPNowPlayingInfoMediaType.audio.rawValue
+        let nowPlayingMediaType = PlaybackManager.shared.isCurrentEpisodeVideo() ? MPNowPlayingInfoMediaType.video.rawValue : MPNowPlayingInfoMediaType.audio.rawValue
         nowPlayingInfo[MPNowPlayingInfoPropertyMediaType] = NSNumber(value: nowPlayingMediaType)
         nowPlayingInfo[MPMediaItemPropertyAlbumTrackCount] = NSNumber(value: 1)
         nowPlayingInfo[MPMediaItemPropertyAlbumTrackNumber] = NSNumber(value: 1)

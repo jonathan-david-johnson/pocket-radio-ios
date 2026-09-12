@@ -1,8 +1,8 @@
 import PocketCastsDataModel
 import PocketCastsUtils
 
-@available(iOS 17, *)
 extension PlayEpisodeIntent {
+    @MainActor
     func intentPlayback(_ episodeUuid: String) {
         FileLog.shared.addMessage("PlayEpisodeIntent called for episode \(episodeUuid)")
 
@@ -12,10 +12,10 @@ extension PlayEpisodeIntent {
         }
 
         AnalyticsPlaybackHelper.shared.currentSource = .interactiveWidget
-        let current = PlaybackManager.shared.currentEpisode()
+        let current = PlaybackManager.shared.currentEpisode
 
         if current?.uuid == podcastEpisode.uuid {
-            Analytics.track(.widgetInteraction, properties: ["action": PlaybackManager.shared.playing() ? "pause" : "play"])
+            Analytics.track(.widgetInteraction, properties: ["action": PlaybackManager.shared.isPlaying ? "pause" : "play"])
             PlaybackActionHelper.playPause()
         } else {
             // Ideally we should use PlaybackActionHelper here

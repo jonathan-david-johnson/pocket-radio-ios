@@ -2,12 +2,16 @@ import Foundation
 import PocketCastsUtils
 
 class DatabaseHelper {
-    class func setup(queue: PCDBQueue) {
+    /// Sets up the database schema, running any required migrations.
+    /// - Returns: `true` if the database was created from scratch this call (starting
+    ///   schema version 0) — i.e. there were no tables to begin with.
+    @discardableResult
+    class func setup(queue: PCDBQueue) -> Bool {
+        var databaseWasCreated = false
         queue.write { db in
             do {
-                try db.executeQuery("PRAGMA busy_timeout = 10000", values: nil).close()
-
                 let startingSchemaVersion = db.pragmaUserVersion() ?? 0
+                databaseWasCreated = startingSchemaVersion < 1
 
                 var newSchemaVersion = startingSchemaVersion
                 upgradeIfRequired(schemaVersion: &newSchemaVersion, db: db)
@@ -21,6 +25,7 @@ class DatabaseHelper {
                 FileLog.shared.addMessage("Failed to setup database \(db.lastErrorCode()): \(db.lastErrorMessage()) actual error: \(error)")
             }
         }
+        return databaseWasCreated
     }
 
     private class func upgradeIfRequired(schemaVersion: inout Int32, db: PCDatabase) {
@@ -899,6 +904,50 @@ class DatabaseHelper {
                 schemaVersion = 73
             } catch {
                 failedAt(73)
+                return
+            }
+        }
+
+        if schemaVersion < 74 {
+            do {
+                try db.executeUpdate("ALTER TABLE SJPodcast ADD COLUMN isExplicit INTEGER DEFAULT 0;", values: nil)
+                schemaVersion = 74
+            } catch {
+                failedAt(74)
+                return
+            }
+        }
+
+        if schemaVersion < 75 {
+            do {
+                try db.executeUpdate("ALTER TABLE SJEpisode ADD COLUMN hlsUrl TEXT;", values: nil)
+                schemaVersion = 75
+            } catch {
+                failedAt(75)
+                return
+            }
+        }
+
+        if schemaVersion < 76 {
+            do {
+                try db.executeUpdate("ALTER TABLE Bookmark ADD COLUMN passage TEXT;", values: nil)
+                try db.executeUpdate("ALTER TABLE Bookmark ADD COLUMN passage_location INTEGER;", values: nil)
+                try db.executeUpdate("ALTER TABLE Bookmark ADD COLUMN passage_modified_date INTEGER;", values: nil)
+                try db.executeUpdate("ALTER TABLE Bookmark ADD COLUMN reference_time real;", values: nil)
+                try db.executeUpdate("ALTER TABLE Bookmark ADD COLUMN reference_time_modified_date INTEGER;", values: nil)
+                schemaVersion = 76
+            } catch {
+                failedAt(76)
+                return
+            }
+        }
+
+        if schemaVersion < 77 {
+            do {
+                try db.executeUpdate("ALTER TABLE SJPodcast ADD COLUMN networkListId TEXT;", values: nil)
+                schemaVersion = 77
+            } catch {
+                failedAt(77)
                 return
             }
         }

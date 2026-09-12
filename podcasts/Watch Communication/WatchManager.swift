@@ -144,7 +144,7 @@ class WatchManager: NSObject, WCSessionDelegate {
             }
         } else if WatchConstants.Messages.PlayPauseRequest.type == messageType {
             AnalyticsPlaybackHelper.shared.currentSource = .watch
-            if PlaybackManager.shared.playing() {
+            if PlaybackManager.shared.isPlaying {
                 PlaybackManager.shared.pause()
             } else {
                 PlaybackManager.shared.play()
@@ -240,6 +240,8 @@ class WatchManager: NSObject, WCSessionDelegate {
             if DateUtil.hasEnoughTimePassed(since: ServerSettings.lastRefreshEndTime(), time: 30.minutes) {
                 RefreshManager.shared.refreshPodcasts()
             }
+        } else if WatchConstants.Messages.PlaybackProgressUpdate.type == messageType {
+            handlePlaybackProgressUpdate(payload: payload)
         } else if WatchConstants.Messages.LoginDetailsRequest.type == messageType {
             // Watch is requesting login details but message was delivered without reply handler
             // This can happen with WatchConnectivity timing issues
@@ -361,6 +363,42 @@ class WatchManager: NSObject, WCSessionDelegate {
         }
     }
 
+    /// Applies a playback position pushed directly from the watch (local fast-path) so the phone
+    /// reflects watch progress without waiting on a server round-trip. Mirrors the server sync's
+    /// last-write-wins rule via `playedUpToModified`, and re-marks the episode dirty so the phone
+    /// still uploads to the server for other devices.
+    private func handlePlaybackProgressUpdate(payload: [String: Any]) {
+        guard FeatureFlag.watchPlaybackProgressLocalSync.enabled,
+              let uuid = payload[WatchConstants.Messages.PlaybackProgressUpdate.episodeUuid] as? String,
+              let playedUpTo = (payload[WatchConstants.Messages.PlaybackProgressUpdate.playedUpTo] as? NSNumber)?.doubleValue,
+              let modifiedAt = (payload[WatchConstants.Messages.PlaybackProgressUpdate.modifiedAt] as? NSNumber)?.int64Value,
+              let episode = DataManager.sharedManager.findBaseEpisode(uuid: uuid) else { return }
+
+        // Don't clobber a position the phone itself is actively producing.
+        if PlaybackManager.shared.isActivelyPlaying(episodeUuid: uuid) { return }
+
+        // Last-write-wins: only apply if the watch's change is newer than what we already have.
+        guard modifiedAt > episode.playedUpToModified else { return }
+
+        episode.playedUpTo = playedUpTo
+        episode.playedUpToModified = modifiedAt
+        DataManager.sharedManager.save(episode: episode)
+        DataManager.sharedManager.updateEpisodePlaybackInteractionDate(episode: episode)
+        FileLog.shared.addMessage("WatchManager: applied playback progress \(playedUpTo) from watch for \(uuid)")
+
+        // If this episode is loaded in the phone's player (and paused), move the live position so the
+        // mini player / now playing updates immediately rather than only after a relaunch. This mirrors
+        // how the server sync applies a remote position (see SyncTask+ServerChanges). Otherwise just
+        // refresh any visible episode cell via the notification.
+        if PlaybackManager.shared.isCurrentEpisode(uuid: uuid), !PlaybackManager.shared.isPlaying {
+            DispatchQueue.main.async {
+                PlaybackManager.shared.seekToFromSync(time: playedUpTo, syncChanges: false, startPlaybackAfterSeek: false)
+            }
+        } else {
+            NotificationCenter.postOnMainThread(notification: Constants.Notifications.playbackPositionSaved, object: uuid)
+        }
+    }
+
     private func handleMarkPlayed(episodeUuid: String) {
         guard let episode = DataManager.sharedManager.findEpisode(uuid: episodeUuid) else { return }
 
@@ -419,13 +457,8 @@ class WatchManager: NSObject, WCSessionDelegate {
         guard let playlist = DataManager.sharedManager.findPlaylist(uuid: playlistUuid) else { return [String: Any]() }
 
         let episodes: [Episode]
-        if FeatureFlag.playlistsRebranding.enabled {
-            let episodeQuery = PlaylistQueryBuilder.query(clause: .episode, for: playlist, episodeUuidToAdd: playlist.episodeUuidToAddToQueries(), limit: Int(playlist.maxAutoDownloadEpisodes()))
-            episodes = DataManager.sharedManager.findPlaylistEpisodesWhere(query: episodeQuery, arguments: nil)
-        } else {
-            let episodeQuery = PlaylistQueryBuilder.queryFor(filter: playlist, episodeUuidToAdd: playlist.episodeUuidToAddToQueries(), limit: Constants.Limits.maxListItemsToSendToWatch)
-            episodes = DataManager.sharedManager.findEpisodesWhere(customWhere: episodeQuery, arguments: nil)
-        }
+        let episodeQuery = PlaylistQueryBuilder.query(clause: .episode, for: playlist, episodeUuidToAdd: playlist.episodeUuidToAddToQueries(), limit: Int(playlist.maxAutoDownloadEpisodes()))
+        episodes = DataManager.sharedManager.findPlaylistEpisodesWhere(query: episodeQuery, arguments: nil)
 
         var convertedEpisodes = [[String: Any]]()
         for episode in episodes {
@@ -642,10 +675,10 @@ class WatchManager: NSObject, WCSessionDelegate {
     private func serializeNowPlaying() -> [String: Any] {
         var nowPlayingInfo = [String: Any]()
         let playbackManager = PlaybackManager.shared
-        if let playingEpisode = playbackManager.currentEpisode() {
+        if let playingEpisode = playbackManager.currentEpisode {
             nowPlayingInfo[WatchConstants.Keys.nowPlayingEpisode] = convertForWatch(episode: playingEpisode)
             nowPlayingInfo[WatchConstants.Keys.nowPlayingSubtitle] = playingEpisode.subTitle()
-            nowPlayingInfo[WatchConstants.Keys.nowPlayingStatus] = playbackManager.playing() ? WatchConstants.PlayingStatus.playing : WatchConstants.PlayingStatus.paused
+            nowPlayingInfo[WatchConstants.Keys.nowPlayingStatus] = playbackManager.isPlaying ? WatchConstants.PlayingStatus.playing : WatchConstants.PlayingStatus.paused
             if let playingEpisode = playingEpisode as? Episode, let podcast = playingEpisode.parentPodcast() {
                 let color = ColorManager.darkThemeTintForPodcast(podcast)
                 nowPlayingInfo[WatchConstants.Keys.nowPlayingColor] = color.hexString()
@@ -661,6 +694,7 @@ class WatchManager: NSObject, WCSessionDelegate {
             let duration = playbackManager.duration()
             let currentTime = playbackManager.currentTime()
             nowPlayingInfo[WatchConstants.Keys.nowPlayingCurrentTime] = currentTime
+            nowPlayingInfo[WatchConstants.Keys.nowPlayingPlayedUpToModified] = playingEpisode.playedUpToModified
             nowPlayingInfo[WatchConstants.Keys.nowPlayingDuration] = duration > 0 ? duration : 0
 
             nowPlayingInfo[WatchConstants.Keys.nowPlayingUpNextCount] = playbackManager.queue.upNextCount()
@@ -724,8 +758,8 @@ class WatchManager: NSObject, WCSessionDelegate {
         podcastsWithOverride.forEach {
             var podcastSettings = [String: Any]()
             podcastSettings[WatchConstants.Keys.podcastUuid] = $0.uuid
-            podcastSettings[WatchConstants.Keys.podcastOverrideGlobalArchive] = $0.isAutoArchiveOverridden
-            podcastSettings[WatchConstants.Keys.podcastAutoArchivePlayedAfter] = $0.autoArchivePlayedAfterTime
+            podcastSettings[WatchConstants.Keys.podcastOverrideGlobalArchive] = $0.overrideGlobalArchive
+            podcastSettings[WatchConstants.Keys.podcastAutoArchivePlayedAfter] = $0.autoArchivePlayedAfter
             podcastArchiveSettings.append(podcastSettings)
         }
         return podcastArchiveSettings

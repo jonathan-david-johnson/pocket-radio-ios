@@ -59,7 +59,7 @@ class DownloadManager: NSObject, FilePathProtocol {
         }
     }()
 
-    var taskFailure: [String: FailureReason] = [:]
+    let taskFailure = ThreadSafeDictionary<String, FailureReason>()
 
     // MARK: - Download Retry Tracking
     struct DownloadAttempt {
@@ -76,16 +76,15 @@ class DownloadManager: NSObject, FilePathProtocol {
         }
     }
 
-    var downloadAttempts: [Int: DownloadAttempt] = [:]
+    let downloadAttempts = ThreadSafeDictionary<Int, DownloadAttempt>()
 
     #if os(watchOS)
         var pendingWatchBackgroundTask: WKURLSessionRefreshBackgroundTask?
     #endif
 
     #if !os(watchOS)
-         private lazy var episodeArtwork: EpisodeArtwork = {
-             EpisodeArtwork()
-         }()
+    @MainActor
+    private lazy var episodeArtwork = EpisodeArtwork()
     #endif
 
     /// Eagerly initializes all URLSessions to avoid race conditions.
@@ -146,14 +145,20 @@ class DownloadManager: NSObject, FilePathProtocol {
     }
 
     lazy var podcastsDirectory: String = {
+#if os(tvOS)
+        let directory = (NSTemporaryDirectory() as NSString).appendingPathComponent("Documents/podcasts_non_backed_up")
+#else
         let directory = (NSHomeDirectory() as NSString).appendingPathComponent("Documents/podcasts_non_backed_up")
-
+#endif
         return directory
     }()
 
     private lazy var streamingBufferDirectory: String = {
+#if os(tvOS)
+        let directory = (NSTemporaryDirectory() as NSString).appendingPathComponent("Documents/podcasts_buffered")
+#else
         let directory = (NSHomeDirectory() as NSString).appendingPathComponent("Documents/podcasts_buffered")
-
+#endif
         return directory
     }()
 
@@ -209,11 +214,23 @@ class DownloadManager: NSObject, FilePathProtocol {
         }
     }
 
+    /// Deletes the contents of the download, buffer, and temp folders (keeping the folders). Used by tvOS logout.
+    func removeAllDownloadedFiles() {
+        let folders = [podcastsDirectory, streamingBufferDirectory, tempDownloadFolder]
+        for folder in folders where !folder.isEmpty {
+            guard let contents = try? FileManager.default.contentsOfDirectory(atPath: folder) else { continue }
+            for file in contents {
+                let path = (folder as NSString).appendingPathComponent(file)
+                try? FileManager.default.removeItem(atPath: path)
+            }
+        }
+    }
+
     func addLocalFile(url: URL, uuid: String) throws -> URL? {
         let destinationUrl = URL(fileURLWithPath: pathForUrl(fileUrl: url, uuid: uuid))
         do {
             try StorageManager.moveItem(at: url, to: destinationUrl, options: .overwriteExisting)
-        } catch let error {
+        } catch {
             let nsError = error as NSError
             switch (nsError.domain, nsError.code) {
             case (NSCocoaErrorDomain, 513):
@@ -267,7 +284,11 @@ class DownloadManager: NSObject, FilePathProtocol {
 
         // try and cache the episode embedded artwork
         #if !os(watchOS)
-        episodeArtwork.loadEmbeddedImage(asset: nil, podcastUuid: episode.parentIdentifier(), episodeUuid: episode.uuid)
+        let artworkPodcastUuid = episode.parentIdentifier()
+        let artworkEpisodeUuid = episode.uuid
+        Task { @MainActor in
+            episodeArtwork.loadEmbeddedImage(asset: nil, podcastUuid: artworkPodcastUuid, episodeUuid: artworkEpisodeUuid)
+        }
         #endif
 
         // download requested for something we already have buferred, just move it
@@ -357,6 +378,7 @@ class DownloadManager: NSObject, FilePathProtocol {
         }
 
         guard FeatureFlag.streamAndCachePlayingEpisode.enabled,
+              !EpisodeManager.hasHLSStream(episode), // HLS is streamed directly, never cached
               !episode.videoPodcast(),
               !episode.isUserEpisode,
               let urlAsset = playbackItem.asset as? AVURLAsset,
@@ -490,7 +512,7 @@ class DownloadManager: NSObject, FilePathProtocol {
             episode.lastArchiveInteractionDate = Date()
 
             // if this podcast has an episode limit, flag this episode as being manually excluded from that limit
-            if let parentPodcast = episode.parentPodcast(), parentPodcast.autoArchiveEpisodeLimitCount > 0 {
+            if let parentPodcast = episode.parentPodcast(), parentPodcast.autoArchiveEpisodeLimit > 0 {
                 episode.excludeFromEpisodeLimit = true
             }
 
@@ -646,7 +668,7 @@ class DownloadManager: NSObject, FilePathProtocol {
     }
 
     func isEpisodeDownloading(_ episode: BaseEpisode) -> Bool {
-        return downloadingEpisodesCache.contains(where: { (_, downloadingEpisode) in
+        return downloadingEpisodesCache.contains(where: { _, downloadingEpisode in
             return episode.uuid == downloadingEpisode.uuid
         })
     }
@@ -714,7 +736,6 @@ class DownloadManager: NSObject, FilePathProtocol {
 
     func removeEpisodeFromCache(_ episode: BaseEpisode) {
         progressManager.removeProgressForEpisode(episode.uuid)
-
     }
 
     private func resumeDownload(tempFilePath: String, session: URLSession, request: URLRequest, previousDownloadFailed: Bool, taskId: String, estimatedBytes: Int64, retryWithoutUserAgent: Bool = false) {
@@ -795,7 +816,7 @@ class DownloadManager: NSObject, FilePathProtocol {
 
     func allTasks() async -> [URLSessionTask] {
         return [await wifiOnlyBackgroundSession.allTasks,
-         await cellularForegroundSession.allTasks,
-         await cellularBackgroundSession.allTasks].flatMap { $0 }
+                await cellularForegroundSession.allTasks,
+                await cellularBackgroundSession.allTasks].flatMap { $0 }
     }
 }

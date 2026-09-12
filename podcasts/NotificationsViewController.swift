@@ -209,7 +209,7 @@ class NotificationsViewController: PCViewController, UITableViewDataSource, UITa
                 if let podcastsController = podcastChooserController {
                     podcastsController.delegate = self
                     let allPodcasts = DataManager.sharedManager.allPodcasts(includeUnsubscribed: false)
-                    podcastsController.selectedUuids = allPodcasts.filter(\.isPushEnabled).map(\.uuid)
+                    podcastsController.selectedUuids = allPodcasts.filter(\.pushEnabled).map(\.uuid)
                     navigationController?.pushViewController(podcastsController, animated: true)
                 }
             case .appBadges: // app badge
@@ -221,7 +221,6 @@ class NotificationsViewController: PCViewController, UITableViewDataSource, UITa
         default:
             return
         }
-
     }
 
     func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
@@ -241,7 +240,6 @@ class NotificationsViewController: PCViewController, UITableViewDataSource, UITa
         default:
             return nil
         }
-
     }
 
     func tableView(_ tableView: UITableView, willDisplayFooterView view: UIView, forSection section: Int) {
@@ -253,7 +251,7 @@ class NotificationsViewController: PCViewController, UITableViewDataSource, UITa
     @objc func podcastUpdated(_ notification: Notification) {
         guard let podcastChooserController else { return }
         let allPodcasts = DataManager.sharedManager.allPodcasts(includeUnsubscribed: false)
-        podcastChooserController.selectedUuids = allPodcasts.filter(\.isPushEnabled).map(\.uuid)
+        podcastChooserController.selectedUuids = allPodcasts.filter(\.pushEnabled).map(\.uuid)
         podcastChooserController.selectedUuidsUpdated = true
     }
 
@@ -344,7 +342,7 @@ extension AppBadge {
         case .totalUnplayed:
             return L10n.statusUnplayed
         case .filterCount:
-            return FeatureFlag.playlistsRebranding.enabled ? L10n.settingsNotificationsSmartPlaylistCount : L10n.settingsNotificationsFilterCount
+            return L10n.settingsNotificationsSmartPlaylistCount
         case .newSinceLastOpened:
             return L10n.newEpisodes
         default:

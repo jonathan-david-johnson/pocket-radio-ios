@@ -26,19 +26,13 @@ extension PodcastViewController {
     }
 
     func multiSelectActionCompleted() {
-        DispatchQueue.main.async {
+        view.layoutIfNeeded()
+        UIView.animate(withDuration: Constants.Animation.defaultAnimationTime, animations: {
+            self.multiSelectFooterBottomConstraint.constant = 0
             self.view.layoutIfNeeded()
-            UIView.animate(withDuration: Constants.Animation.defaultAnimationTime, animations: {
-                self.multiSelectFooterBottomConstraint.constant = 0
-                self.view.layoutIfNeeded()
-            }, completion: { _ in
-                self.isMultiSelectEnabled = false
-            })
-        }
-    }
-
-    func multiSelectPreferredStatusBarStyle() -> UIStatusBarStyle {
-        preferredStatusBarStyle
+        }, completion: { _ in
+            self.isMultiSelectEnabled = false
+        })
     }
 
     var multiSelectViewSource: AnalyticsSource {
@@ -59,13 +53,13 @@ extension PodcastViewController {
         }
     }
 
-    @IBAction func selectAllTapped() {
-        if currentViewMode == .bookmarks, let vm = bookmarkViewModel {
+    @objc func selectAllTapped() {
+        if currentViewMode == .bookmarks, let viewModel = bookmarkList?.viewModel {
             // Forward select all/deselect all to bookmarks VM
-            vm.toggleSelectAll()
+            viewModel.toggleSelectAll()
             updateSelectAllBtn()
         } else {
-            let shouldSelectAll = multiSelectAllBtn.title(for: .normal) == L10n.selectAll
+            let shouldSelectAll = multiSelectAllBarButton?.title == L10n.selectAll
             if shouldSelectAll {
                 guard let allObjects = episodeInfo[safe: 1]?.elements, !allObjects.isEmpty else { return }
                 episodesTable.selectAllBelow(fromIndexPath: IndexPath(row: 0, section: PodcastViewController.allEpisodesSection))
@@ -79,24 +73,21 @@ extension PodcastViewController {
         }
     }
 
-    @IBAction func cancelTapped() {
-        if currentViewMode == .bookmarks, let vm = bookmarkViewModel {
-            vm.toggleMultiSelection()
+    @objc func cancelTapped() {
+        if currentViewMode == .bookmarks, let viewModel = bookmarkList?.viewModel {
+            viewModel.toggleMultiSelection()
         } else {
             isMultiSelectEnabled = false
         }
     }
 
     func updateSelectAllBtn() {
-        if currentViewMode == .bookmarks, let vm = bookmarkViewModel {
-            multiSelectAllBtn.setTitle(vm.hasSelectedAll ? L10n.deselectAll : L10n.selectAll, for: .normal)
+        guard let multiSelectAllBarButton else { return }
+        if currentViewMode == .bookmarks, let viewModel = bookmarkList?.viewModel {
+            multiSelectAllBarButton.title = viewModel.hasSelectedAll ? L10n.deselectAll : L10n.selectAll
         } else {
             let episodesInTable = episodeInfo[PodcastViewController.allEpisodesSection].elements.compactMap { $0 as? ListEpisode }.count
-            if MultiSelectHelper.shouldSelectAll(onCount: selectedEpisodes.count, totalCount: episodesInTable) {
-                multiSelectAllBtn.setTitle(L10n.selectAll, for: .normal)
-            } else {
-                multiSelectAllBtn.setTitle(L10n.deselectAll, for: .normal)
-            }
+            multiSelectAllBarButton.title = MultiSelectHelper.shouldSelectAll(onCount: selectedEpisodes.count, totalCount: episodesInTable) ? L10n.selectAll : L10n.deselectAll
         }
     }
 

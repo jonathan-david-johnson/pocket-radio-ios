@@ -2,6 +2,7 @@ import PocketCastsDataModel
 import PocketCastsServer
 import UIKit
 
+@MainActor
 class EpisodeCell: ThemeableSwipeCell, MainEpisodeActionViewDelegate {
     private static let playedAlpha: CGFloat = 0.5
 
@@ -31,8 +32,8 @@ class EpisodeCell: ThemeableSwipeCell, MainEpisodeActionViewDelegate {
     @IBOutlet var informationLabel: ThemeableLabel! {
         didSet {
             informationLabel.style = .primaryText02
-            let baseFont = informationLabel.font.monospaced()
-            informationLabel.font = UIFontMetrics(forTextStyle: .footnote).scaledFont(for: baseFont)
+            informationLabel.font = UIFont.font(ofSize: 13, scalingWith: .footnote)
+            informationLabel.adjustsFontForContentSizeCategory = true
         }
     }
 
@@ -43,10 +44,34 @@ class EpisodeCell: ThemeableSwipeCell, MainEpisodeActionViewDelegate {
         }
     }
 
+    private var topDivider: ThemeDividerView?
+
+    /// Shows a hairline divider along the top edge of the cell. Used by lists where the
+    /// section header is transparent (Liquid Glass plain-style sticky headers) and can't
+    /// host the divider itself.
+    var showsTopDivider = false {
+        didSet {
+            guard showsTopDivider != oldValue else { return }
+            if showsTopDivider, topDivider == nil {
+                let divider = ThemeDividerView()
+                divider.translatesAutoresizingMaskIntoConstraints = false
+                contentView.addSubview(divider)
+                NSLayoutConstraint.activate([
+                    divider.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
+                    divider.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+                    divider.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+                    divider.topAnchor.constraint(equalTo: contentView.topAnchor)
+                ])
+                topDivider = divider
+            }
+            topDivider?.isHidden = !showsTopDivider
+        }
+    }
+
     @IBOutlet var dayName: ThemeableLabel! {
         didSet {
             dayName.style = .primaryText02
-            dayName.font = UIFont.font(ofSize: 11, weight: .semibold, scalingWith: .caption2)
+            dayName.font = UIFont.font(ofSize: 11, weight: .semibold, scalingWith: .footnote)
         }
     }
 
@@ -68,6 +93,7 @@ class EpisodeCell: ThemeableSwipeCell, MainEpisodeActionViewDelegate {
     }
 
     private var lastAppliedTheme: Theme.ThemeType?
+    private var lastAppliedSizeCategory: UIContentSizeCategory?
 
     @IBOutlet var videoIndicator: UIImageView!
     @IBOutlet var actionButton: MainEpisodeActionView! {
@@ -123,6 +149,10 @@ class EpisodeCell: ThemeableSwipeCell, MainEpisodeActionViewDelegate {
     override func awakeFromNib() {
         super.awakeFromNib()
 
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (view: EpisodeCell, _) in
+            view.updateSize()
+        }
+
         NotificationCenter.default.addObserver(self, selector: #selector(updateCellFromGenericEvent), name: Constants.Notifications.playbackStarted, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(updateCellFromGenericEvent), name: Constants.Notifications.playbackEnded, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(updateCellFromGenericEvent), name: Constants.Notifications.playbackPaused, object: nil)
@@ -142,6 +172,9 @@ class EpisodeCell: ThemeableSwipeCell, MainEpisodeActionViewDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(updateCellFromSpecificEvent(_:)), name: ServerNotifications.userEpisodeUploadStatusChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(uploadProgressDidUpdate), name: ServerNotifications.userEpisodeUploadProgress, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(reloadArtwork(_:)), name: Constants.Notifications.userEpisodeUpdated, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(upNextEpisodeChanged(_:)), name: Constants.Notifications.upNextEpisodeAdded, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(upNextEpisodeChanged(_:)), name: Constants.Notifications.upNextEpisodeRemoved, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(upNextQueueChanged), name: Constants.Notifications.upNextQueueChanged, object: nil)
 
         updateSize()
     }
@@ -211,9 +244,11 @@ class EpisodeCell: ThemeableSwipeCell, MainEpisodeActionViewDelegate {
             setEpisodeTitle(episode: episode)
 
             starIndicator.isHidden = !episode.keepEpisode
-            videoIndicator.isHidden = !episode.videoPodcast()
+            // Treat episodes that will stream HLS as video, so we show the video indicator without parsing
+            // the stream. Downloaded episodes play their local audio-only file, so they get no icon.
+            videoIndicator.isHidden = !EpisodeManager.isVideo(episode)
             videoIndicator.tintColor = ThemeColor.support01()
-            upNextIndicator.isHidden = !PlaybackManager.shared.inUpNext(episode: episode)
+            setUpNextIndicator(visible: PlaybackManager.shared.inUpNext(episode: episode), animated: false)
             upNextIndicator.tintColor = ThemeColor.support01()
 
             var uploadFailed = false
@@ -422,6 +457,58 @@ class EpisodeCell: ThemeableSwipeCell, MainEpisodeActionViewDelegate {
         }
     }
 
+    @objc private func upNextEpisodeChanged(_ notification: Notification) {
+        guard let episodeUuid = notification.object as? String, episodeUuid == episode?.uuid else { return }
+
+        updateUpNextIndicator(animated: true)
+    }
+
+    @objc private func upNextQueueChanged() {
+        // Bulk change with no specific episode, re-evaluate this cell against the queue
+        updateUpNextIndicator(animated: true)
+    }
+
+    private func updateUpNextIndicator(animated: Bool) {
+        guard let episode else { return }
+
+        let isInUpNext = PlaybackManager.shared.inUpNext(episode: episode)
+        inUpNext = isInUpNext
+        setUpNextIndicator(visible: isInUpNext, animated: animated)
+    }
+
+    private func setUpNextIndicator(visible: Bool, animated: Bool) {
+        let shouldHide = !visible
+
+        guard animated, window != nil, upNextIndicator.isHidden != shouldHide else {
+            upNextIndicator.isHidden = shouldHide
+            upNextIndicator.alpha = 1
+            upNextIndicator.transform = .identity
+            return
+        }
+
+        let collapsedTransform = CGAffineTransform(scaleX: 0.1, y: 0.1)
+        if visible {
+            upNextIndicator.alpha = 0
+            upNextIndicator.transform = collapsedTransform
+            upNextIndicator.isHidden = false
+            UIView.animate(withDuration: Constants.Animation.defaultAnimationTime, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState], animations: {
+                self.upNextIndicator.alpha = 1
+                self.upNextIndicator.transform = .identity
+                self.contentView.layoutIfNeeded()
+            })
+        } else {
+            UIView.animate(withDuration: Constants.Animation.defaultAnimationTime, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState], animations: {
+                self.upNextIndicator.alpha = 0
+                self.upNextIndicator.transform = collapsedTransform
+                self.upNextIndicator.isHidden = true
+                self.contentView.layoutIfNeeded()
+            }, completion: { _ in
+                self.upNextIndicator.alpha = 1
+                self.upNextIndicator.transform = .identity
+            })
+        }
+    }
+
     @objc private func downloadProgressDidUpdate() {
         guard let ourEpisode = episode, let _ = DownloadManager.shared.progressManager.progressForEpisode(ourEpisode.uuid) else { return }
 
@@ -434,6 +521,14 @@ class EpisodeCell: ThemeableSwipeCell, MainEpisodeActionViewDelegate {
     }
 
     @objc private func uploadProgressDidUpdate() {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { uploadProgressDidUpdateOnMain() }
+        } else {
+            Task { @MainActor in uploadProgressDidUpdateOnMain() }
+        }
+    }
+
+    private func uploadProgressDidUpdateOnMain() {
         guard let ourEpisode = episode as? UserEpisode, let _ = UploadManager.shared.progressManager.progressForEpisode(ourEpisode.uuid) else { return }
 
         // if this episode isn't listed as uploading, update it from the DB
@@ -441,15 +536,7 @@ class EpisodeCell: ThemeableSwipeCell, MainEpisodeActionViewDelegate {
             episode = reloadEpisode()
         }
 
-        if Thread.isMainThread {
-            populate(progressOnly: true)
-        } else {
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-
-                self.populate(progressOnly: true)
-            }
-        }
+        populate(progressOnly: true)
     }
 
     @objc func reloadArtwork(_ notification: Notification) {
@@ -477,7 +564,7 @@ class EpisodeCell: ThemeableSwipeCell, MainEpisodeActionViewDelegate {
         guard let episode else { return }
 
         // if the user tapped play from a featured list, record that. We just want the first play, if they are unpausing it, that's not relevant (hence the last check below)
-        if let podcastUuid, let listUuid, !PlaybackManager.shared.isNowPlayingEpisode(episodeUuid: episode.uuid) {
+        if let podcastUuid, let listUuid, !PlaybackManager.shared.isCurrentEpisode(uuid: episode.uuid) {
             AnalyticsHelper.podcastEpisodePlayedFromList(listId: listUuid, podcastUuid: podcastUuid)
         }
 
@@ -491,7 +578,6 @@ class EpisodeCell: ThemeableSwipeCell, MainEpisodeActionViewDelegate {
     func errorTapped() {
         guard let episode else { return }
 
-        let statusBarStyle = playlistUuid == nil ? UIStatusBarStyle.lightContent : AppTheme.defaultStatusBarStyle()
         if episode.playbackError() {
             let optionsPicker = OptionsPicker(title: nil)
             let retryAction = OptionAction(label: L10n.retry, icon: nil, action: { [weak self] in
@@ -499,7 +585,7 @@ class EpisodeCell: ThemeableSwipeCell, MainEpisodeActionViewDelegate {
             })
 
             optionsPicker.addDescriptiveActions(title: L10n.playbackFailed, message: episode.playbackErrorDetails, icon: "option-alert", actions: [retryAction])
-            optionsPicker.show(statusBarStyle: statusBarStyle)
+            optionsPicker.present()
         } else {
             let downloadError = episode.readableErrorMessage()
             let optionsPicker = OptionsPicker(title: nil)
@@ -507,7 +593,7 @@ class EpisodeCell: ThemeableSwipeCell, MainEpisodeActionViewDelegate {
                 self?.downloadTapped()
             })
             optionsPicker.addDescriptiveActions(title: L10n.downloadFailed, message: downloadError, icon: "option-alert", actions: [retryAction])
-            optionsPicker.show(statusBarStyle: statusBarStyle)
+            optionsPicker.present()
         }
     }
 
@@ -535,7 +621,10 @@ class EpisodeCell: ThemeableSwipeCell, MainEpisodeActionViewDelegate {
         super.prepareForReuse()
 
         starIndicator.isHidden = true
+        upNextIndicator.layer.removeAllAnimations()
         upNextIndicator.isHidden = true
+        upNextIndicator.alpha = 1
+        upNextIndicator.transform = .identity
         statusIndicator.isHidden = true
         uploadProgressIndicator.isHidden = true
         uploadStatusIndicator.isHidden = true
@@ -594,6 +683,11 @@ class EpisodeCell: ThemeableSwipeCell, MainEpisodeActionViewDelegate {
     }
 
     private func updateSize() {
+        let sizeCategory = traitCollection.preferredContentSizeCategory
+
+        guard lastAppliedSizeCategory != sizeCategory else { return }
+        lastAppliedSizeCategory = sizeCategory
+
         let metric = UIFontMetrics(forTextStyle: .largeTitle)
         let imageSize = max(56, metric.scaledValue(for: 56))
         episodeImage.updateSizeConstraints(to: imageSize)
@@ -621,11 +715,5 @@ class EpisodeCell: ThemeableSwipeCell, MainEpisodeActionViewDelegate {
         episodeTitle.updateNumberOfLines(regular: 2, accessibility: 3)
         dayName.updateNumberOfLines(regular: 1, accessibility: 3)
         informationLabel.updateNumberOfLines(regular: 1, accessibility: 3)
-    }
-
-    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
-        super.traitCollectionDidChange(previousTraitCollection)
-        guard traitCollection.preferredContentSizeCategory != previousTraitCollection?.preferredContentSizeCategory else { return }
-        updateSize()
     }
 }

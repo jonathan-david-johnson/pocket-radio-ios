@@ -1,5 +1,6 @@
 import GRDB
 import Foundation
+import OSLog
 import PocketCastsUtils
 import SQLite3
 
@@ -30,7 +31,12 @@ public class DataManager {
 
     let dbQueue: PCDBQueue
 
-    public static internal(set) var sharedManager = DataManager()
+    /// `true` if the database was created from scratch during init (no tables existed).
+    /// On tvOS, where the database lives in the purgeable Caches directory, a logged-in
+    /// user seeing this means their data was wiped and a full resync is required.
+    public let databaseWasCreated: Bool
+
+    public internal(set) static var sharedManager = DataManager()
 
     public static var logger: ErrorLogger?
 
@@ -42,6 +48,20 @@ public class DataManager {
 
         var config = Configuration()
         config.busyMode = .timeout(10)
+#if DEBUG
+        // Launch with `-PCSQLTracing` (Edit Scheme ▸ Run ▸ Arguments, off by default) to log
+        // every SQL statement with its arguments to the unified logging system.
+        // Filter with `subsystem:<bundle id> category:SQL`.
+        if ProcessInfo.processInfo.arguments.contains("-PCSQLTracing") {
+            let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "PocketCasts", category: "SQL")
+            config.publicStatementArguments = true
+            config.prepareDatabase { db in
+                db.trace(options: .statement) { event in
+                    logger.debug("\(event, privacy: .public)")
+                }
+            }
+        }
+#endif
         let dbPool = try! DatabasePool(path: DataManager.pathToDb(), configuration: config)
         let dbQueue = GRDBQueue(dbPool: dbPool, logger: Self.logger)
         DataManager.setDatabaseFileProtectionToNone()
@@ -82,18 +102,23 @@ public class DataManager {
     public init(dbQueue: PCDBQueue) {
         self.dbQueue = dbQueue
 
-        DatabaseHelper.setup(queue: dbQueue)
-
-        // closing it above won't affect these calls, since they will re-open it
-        podcastManager.setup(dbQueue: dbQueue)
-        folderManager.setup(dbQueue: dbQueue)
-        upNextManager.setup(dbQueue: dbQueue)
+        self.databaseWasCreated = DatabaseHelper.setup(queue: dbQueue)
 
         autoAddCandidates = AutoAddCandidatesDataManager(dbQueue: dbQueue)
         bookmarks = BookmarkDataManager(dbQueue: dbQueue)
         ratings = RatingsDataManager()
         // Force unwrap is safe here as dbQueue is always a GRDBQueue at runtime
         networkDataUsageManager = NetworkDataUsageManager(dbQueue: dbQueue as! GRDBQueue)
+
+        setupInMemoryCaches()
+    }
+
+    /// (Re)loads the in-memory caches that mirror database tables. Keep in sync when adding a
+    /// new cached manager.
+    private func setupInMemoryCaches() {
+        podcastManager.setup(dbQueue: dbQueue)
+        folderManager.setup(dbQueue: dbQueue)
+        upNextManager.setup(dbQueue: dbQueue)
     }
 
     convenience init(endOfYearManager: EndOfYearDataManager) {
@@ -125,7 +150,6 @@ public class DataManager {
                     try db.executeUpdate("CREATE INDEX IF NOT EXISTS episode_non_null_download_task_id ON SJEpisode(downloadTaskId) WHERE downloadTaskId IS NOT NULL;", values: nil)
                     try db.executeUpdate("CREATE INDEX IF NOT EXISTS episode_added_date ON SJEpisode (addedDate);", values: nil)
                 } catch {
-
                 }
             }
         }
@@ -441,6 +465,12 @@ public class DataManager {
         podcastManager.setAllPodcastImageVersions(to: version, dbQueue: dbQueue)
     }
 
+    /// Clears the `If-Modified-Since` token used when refreshing podcasts from the cache server, so
+    /// the next refresh of each subscribed podcast returns the full metadata instead of a 304.
+    public func clearLastUpdatedAtForAllPodcasts() {
+        podcastManager.clearLastUpdatedAtForAllPodcasts(dbQueue: dbQueue)
+    }
+
     public func bulkSetFolderUuid(folderUuid: String, podcastUuids: [String]) {
         podcastManager.bulkSetFolderUuid(folderUuid: folderUuid, podcastUuids: podcastUuids, dbQueue: dbQueue)
     }
@@ -528,6 +558,15 @@ public class DataManager {
 
     public func findLatestEpisodes(podcast: Podcast, limit: Int) -> [Episode] {
         episodeManager.findLatestEpisodes(podcast: podcast, limit: limit, dbQueue: dbQueue)
+    }
+
+    /// Unplayed episodes from subscribed podcasts, most recently published first.
+    public func findNewReleaseEpisodes(limit: Int) -> [Episode] {
+        episodeManager.findNewReleaseEpisodes(limit: limit, dbQueue: dbQueue)
+    }
+
+    public func findNewVideoReleaseEpisodes(limit: Int) -> [Episode] {
+        episodeManager.findNewVideoReleaseEpisodes(limit: limit, dbQueue: dbQueue)
     }
 
     public func unsyncedEpisodes(limit: Int) -> [Episode] {
@@ -951,11 +990,7 @@ public class DataManager {
     }
 
     public func episodeCount(for playlist: EpisodeFilter, episodeUuidToAdd: String?) -> Int {
-        if FeatureFlag.playlistsRebranding.enabled {
-            playlistEpisodeCount(for: playlist, episodeUuidToAdd: episodeUuidToAdd)
-        } else {
-            playlistManager.episodeCount(for: playlist, episodeUuidToAdd: episodeUuidToAdd, dbQueue: dbQueue)
-        }
+        playlistEpisodeCount(for: playlist, episodeUuidToAdd: episodeUuidToAdd)
     }
 
     public func playlistEpisodeCount(for playlist: EpisodeFilter, episodeUuidToAdd: String?) -> Int {
@@ -1136,7 +1171,6 @@ public class DataManager {
                 if resultSet.next() {
                     count = resultSet.long(forColumnIndex: 0)
                 }
-                resultSet.close()
             } catch {
                 FileLog.shared.addMessage("DataManager.count error: \(error)")
             }
@@ -1159,8 +1193,20 @@ public class DataManager {
         return folderPath.appendingPathComponent("podcast_newDB_backup.sqlite3")
     }
 
+    /// The database file plus its WAL/SHM sidecars — the full on-disk file set.
+    public static func databaseFilePaths() -> [String] {
+        let dbPath = pathToDb()
+        return [dbPath, "\(dbPath)-wal", "\(dbPath)-shm"]
+    }
+
     private static func pathToDbFolder() -> String {
-        let documentsPath = NSSearchPathForDirectoriesInDomains(.applicationSupportDirectory, .userDomainMask, true).last as NSString?
+        #if os(tvOS)
+        //tvOS does not allow the use of the application support or documents directory on a real device so we need to use the caches directory.
+        let typeOfDirectory: FileManager.SearchPathDirectory = .cachesDirectory
+        #else
+        let typeOfDirectory: FileManager.SearchPathDirectory = .applicationSupportDirectory
+        #endif
+        let documentsPath = NSSearchPathForDirectoriesInDomains(typeOfDirectory, .userDomainMask, true).last as NSString?
         let mainFolder = documentsPath?.appendingPathComponent("Pocket Casts")
 
         return mainFolder!
@@ -1170,7 +1216,7 @@ public class DataManager {
         do {
             try FileManager.default.createDirectory(atPath: pathToDbFolder(), withIntermediateDirectories: true, attributes: nil)
         } catch {
-            print("Unable to create database folder")
+            FileLog.shared.addMessage("Unable to create database folder: \(error)")
         }
     }
 
@@ -1184,20 +1230,16 @@ public class DataManager {
         let pushOnCount = DataManager.sharedManager.count(query: pushOnQuery, values: nil)
         let totalCount = (DataManager.sharedManager.count(query: totalQuery, values: nil) - 1) // -1 because the podcast we're currently adding could be returned by this query
         if totalCount > 0, pushOnCount >= totalCount {
-            podcast.isPushEnabled = true
+            podcast.pushEnabled = true
         } else {
-            podcast.isPushEnabled = false
+            podcast.pushEnabled = false
         }
 
         DataManager.sharedManager.save(podcast: podcast)
     }
 
     public func pushEnabledPodcastsCount() -> Int {
-        if FeatureFlag.newSettingsStorage.enabled {
-            DataManager.sharedManager.count(query: "SELECT COUNT(*) FROM \(DataManager.podcastTableName) WHERE json_extract(settings, '$.notification.value') = ? AND subscribed = 1", values: [true])
-        } else {
-            DataManager.sharedManager.count(query: "SELECT COUNT(*) FROM \(DataManager.podcastTableName) WHERE pushEnabled = 1 AND subscribed = 1", values: nil)
-        }
+        DataManager.sharedManager.count(query: "SELECT COUNT(*) FROM \(DataManager.podcastTableName) WHERE pushEnabled = 1 AND subscribed = 1", values: nil)
     }
 
     // MARK: - Up Next History Manager
@@ -1242,6 +1284,23 @@ public extension DataManager {
 
             try? db.executeUpdate(query, values: nil)
         }
+    }
+}
+
+// MARK: - Orphaned Episode Cleanup
+
+public extension DataManager {
+    func findOrphanedEpisodes() -> [Episode] {
+        episodeManager.findOrphanedEpisodes(dbQueue)
+    }
+
+    /// Deletes episode rows by internal id (not uuid), so a duplicate "live" row sharing the same uuid is left untouched.
+    func deleteOrphanedEpisodes(ids: [Int64]) {
+        episodeManager.deleteOrphanedEpisodes(ids: ids, dbQueue: dbQueue)
+    }
+
+    func reconcileOrphanedEpisode(survivorId: Int64, realPodcastId: Int64, idsToDelete: [Int64]) {
+        episodeManager.reconcileOrphanedEpisode(survivorId: survivorId, realPodcastId: realPodcastId, idsToDelete: idsToDelete, dbQueue: dbQueue)
     }
 }
 
@@ -1290,7 +1349,6 @@ public extension DataManager {
 
     func episodesStartedAndCompleted(in year: Int) -> EpisodesStartedAndCompleted {
         endOfYearManager.episodesStartedAndCompleted(in: year, dbQueue: dbQueue)
-
     }
 
     func summarizedRatings(in year: Int) -> [UInt32: Int]? {
@@ -1369,5 +1427,27 @@ extension DataManager {
         }
 
         try? sourceDbQueue.close()
+    }
+}
+
+// MARK: - Full data wipe
+
+extension DataManager {
+    /// Deletes every row from every table, leaving the schema and the live database connection
+    /// intact so objects already holding a `DataManager` reference keep working. Used by tvOS
+    /// logout; a later login repopulates the database via a full sync.
+    public func deleteAllData() {
+        do {
+            try (dbQueue as? GRDBQueue)?.dbPool.write { db in
+                let tableNames = try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+                for tableName in tableNames {
+                    try db.execute(sql: "DELETE FROM \(tableName.quotedDatabaseIdentifier)")
+                }
+            }
+        } catch {
+            FileLog.shared.addMessage("DataManager.deleteAllData failed: \(error)")
+        }
+
+        setupInMemoryCaches()
     }
 }

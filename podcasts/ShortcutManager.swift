@@ -11,15 +11,15 @@ class ShortcutManager: CustomObserver {
         stopListeningForShortcutChanges()
 
         let notifications: [NSNotification.Name] = [Constants.Notifications.playbackStarted,
-                                                     Constants.Notifications.playbackPaused,
-                                                     Constants.Notifications.playbackEnded,
-                                                     Constants.Notifications.playlistChanged,
-                                                     Constants.Notifications.podcastAdded,
-                                                     Constants.Notifications.episodePlayStatusChanged,
-                                                     Constants.Notifications.episodeArchiveStatusChanged,
-                                                     Constants.Notifications.episodeStarredChanged,
-                                                     Constants.Notifications.episodeDownloadStatusChanged,
-                                                     Constants.Notifications.manyEpisodesChanged]
+                                                    Constants.Notifications.playbackPaused,
+                                                    Constants.Notifications.playbackEnded,
+                                                    Constants.Notifications.playlistChanged,
+                                                    Constants.Notifications.podcastAdded,
+                                                    Constants.Notifications.episodePlayStatusChanged,
+                                                    Constants.Notifications.episodeArchiveStatusChanged,
+                                                    Constants.Notifications.episodeStarredChanged,
+                                                    Constants.Notifications.episodeDownloadStatusChanged,
+                                                    Constants.Notifications.manyEpisodesChanged]
 
         let mergedNotifications = notifications
             .map { NotificationCenter.default.publisher(for: $0) }
@@ -64,9 +64,9 @@ class ShortcutManager: CustomObserver {
             )
         }
 
-        if let currentEpisode = PlaybackManager.shared.currentEpisode() {
+        if let currentEpisode = PlaybackManager.shared.currentEpisode {
             // add a play/pause shortcut
-            if PlaybackManager.shared.playing() {
+            if PlaybackManager.shared.isPlaying {
                 shortcutItems.append(
                     UIMutableApplicationShortcutItem(
                         type: "au.com.shiftyjelly.podcasts",

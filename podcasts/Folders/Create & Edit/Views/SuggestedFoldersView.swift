@@ -18,7 +18,7 @@ struct SuggestedFoldersView: View {
 
     @State private var applySuggestedFoldersConfirmation = false
 
-    @ObservedObject var model: SuggestedFoldersModel = SuggestedFoldersModel()
+    @ObservedObject var model = SuggestedFoldersModel()
 
     let source: AnalyticsSource
 
@@ -28,6 +28,10 @@ struct SuggestedFoldersView: View {
         self.model = model
         self.source = source
         self.onCompletion = onCompletion
+    }
+
+    var navBarTint: Color? {
+        ThemeColor.navBarTint(ThemeColor.primaryInteractive01(for: theme.activeTheme))
     }
 
     var body: some View {
@@ -45,14 +49,14 @@ struct SuggestedFoldersView: View {
                                     onCompletion(.dismiss)
                                 } label: {
                                     Image("close")
-                                        .foregroundColor(ThemeColor.primaryInteractive01(for: theme.activeTheme).color)
+                                        .foregroundColor(navBarTint)
                                 }
                                 .accessibilityLabel(L10n.close)
                             }
                         }
                 }
                 .navigationViewStyle(.stack)
-                .tint(ThemeColor.primaryInteractive01(for: theme.activeTheme).color)
+                .tint(navBarTint)
             case .failed:
                 CreateFolderView(isInsideNavigation: false) { uuid in
                     if let uuid {
@@ -94,7 +98,7 @@ struct SuggestedFoldersView: View {
             foldersView
                 .padding(.horizontal, -Constants.margin)
                 // hack to allow the scroll indicator to be visible without overlapping the content
-                .customHorizontalMargin(margin: Constants.margin)
+                .contentMargins(.horizontal, Constants.margin, for: .scrollContent)
             Button {
                 if model.showConfirmation {
                     track(.suggestedFoldersReplaceFoldersTapped)
@@ -134,7 +138,7 @@ struct SuggestedFoldersView: View {
         .onAppear {
             track(.suggestedFoldersPageShown)
         }
-        .onChange(of: createFolderActive) { newFolder in
+        .onChange(of: createFolderActive) { _, newFolder in
             if newFolder {
                 track(.suggestedFoldersCreateCustomFolderTapped)
             }

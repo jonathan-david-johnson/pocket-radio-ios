@@ -86,7 +86,7 @@ struct SyncSigninView: View {
                 .submitLabel(.next)
                 .focused($focusedField, equals: .email)
                 .onSubmit { focusedField = .password }
-                .onChange(of: model.email) { _ in model.textFieldChanged() }
+                .onChange(of: model.email) { model.textFieldChanged() }
         }
         .padding(9)
         .themedTextField(hasErrored: model.errorMessage != nil)
@@ -118,7 +118,7 @@ struct SyncSigninView: View {
                 .accessibilityLabel(model.showPassword ? L10n.signInHidePasswordLabel : L10n.signInShowPasswordLabel)
                 .tint(theme.primaryIcon03)
             }
-            .onChange(of: model.password) { _ in model.textFieldChanged() }
+            .onChange(of: model.password) { model.textFieldChanged() }
         }
         .padding(9)
         .themedTextField(hasErrored: model.errorMessage != nil)
@@ -311,8 +311,7 @@ final class SyncSigninViewModel: ObservableObject {
         ServerSettings.userId = userId
         ServerSettings.saveSyncingPassword(password)
 
-        if (FeatureFlag.onlyMarkPodcastsUnsyncedForNewUsers.enabled && ServerSettings.lastSyncTime == nil)
-            || !FeatureFlag.onlyMarkPodcastsUnsyncedForNewUsers.enabled {
+        if ServerSettings.lastSyncTime == nil {
             DataManager.sharedManager.markAllPodcastsUnsynced()
         }
 

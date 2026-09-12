@@ -6,13 +6,9 @@ import CompilerPluginSupport
 let package = Package(
     name: "Modules",
     platforms: [
-        .iOS(.v16), .watchOS(.v9), .macOS(.v10_15), .tvOS(.v17)
+        .iOS(.v17), .watchOS(.v10), .macOS(.v13), .tvOS(.v17)
     ],
     products: XcodeSupport.products + [
-        .library(
-            name: "PocketCastsDependencyInjection",
-            targets: ["PocketCastsDependencyInjection"]
-        ),
         .library(
             name: "GRDBMacros",
             targets: ["GRDBMacros"]
@@ -47,7 +43,7 @@ let package = Package(
         .package(url: "https://github.com/ra1028/DifferenceKit", from: "1.2.0"),
         .package(url: "https://github.com/krisk/fuse-swift", from: "1.4.0"),
         .package(url: "https://github.com/shiftyjelly/SwipeCellKit", from: "2.7.6"),
-        .package(url: "https://github.com/Automattic/Automattic-Tracks-iOS", from: "4.2.1"),
+        .package(url: "https://github.com/Automattic/Automattic-Tracks-iOS", exact: "4.3.0"),
         .package(url: "https://github.com/firebase/firebase-ios-sdk.git", from: "10.23.0"),
         .package(url: "https://github.com/google/GoogleSignIn-iOS", from: "7.1.0"),
         .package(url: "https://github.com/Automattic/Agrume", from: "5.6.12"),
@@ -58,17 +54,9 @@ let package = Package(
         .package(url: "https://github.com/ksemianov/WrappingHStack", from: "0.2.0"),
         .package(url: "https://github.com/Automattic/pocket-casts-ios-fingerprint", branch: "trunk"),
         .package(url: "https://github.com/supabase/supabase-swift.git", from: "2.0.0"),
+        .package(url: "https://github.com/scinfu/SwiftSoup.git", from: "2.7.0"),
     ],
     targets: XcodeSupport.targets + [
-        .target(
-            name: "PocketCastsDependencyInjection",
-            path: "Sources/PocketCastsDependencyInjection"
-        ),
-        .testTarget(
-            name: "PocketCastsDependencyInjectionTests",
-            dependencies: ["PocketCastsDependencyInjection"],
-            path: "Tests/PocketCastsDependencyInjectionTests"
-        ),
         .target(
             name: "GRDBMacros",
             dependencies: [
@@ -128,6 +116,7 @@ let package = Package(
             dependencies: [
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
                 .product(name: "Swime", package: "Swime"),
+                .product(name: "SwiftSoup", package: "SwiftSoup"),
                 "PocketCastsDataModel",
                 "PocketCastsUtils",
             ],
@@ -216,7 +205,6 @@ enum XcodeSupport {
                     "PocketCastsDataModel",
                     "PocketCastsServer",
                     "PocketCastsUtils",
-                    "PocketCastsDependencyInjection",
                     "EventHorizonSDK",
                     .product(name: "Lottie", package: "lottie-ios"),
                     .product(name: "DifferenceKit", package: "DifferenceKit"),
@@ -245,7 +233,6 @@ enum XcodeSupport {
                     "PocketCastsDataModel",
                     "PocketCastsServer",
                     "PocketCastsUtils",
-                    "PocketCastsDependencyInjection",
                     "EventHorizonSDK",
                     .product(name: "AutomatticTracks", package: "Automattic-Tracks-iOS"),
                     .product(name: "FirebaseAnalyticsWithoutAdIdSupport", package: "firebase-ios-sdk"),
@@ -260,7 +247,6 @@ enum XcodeSupport {
                     "PocketCastsDataModel",
                     "PocketCastsServer",
                     "PocketCastsUtils",
-                    "PocketCastsDependencyInjection",
                     "EventHorizonSDK",
                     .product(name: "AutomatticTracks", package: "Automattic-Tracks-iOS"),
                     .product(name: "Kingfisher", package: "Kingfisher"),
@@ -296,11 +282,12 @@ enum XcodeSupport {
                     "PocketCastsUtils",
                     "PocketCastsDataModel",
                     "PocketCastsServer",
-                    "PocketCastsDependencyInjection",
                     "EventHorizonSDK",
+                    .product(name: "AutomatticTracks", package: "Automattic-Tracks-iOS"),
                     .product(name: "Kingfisher", package: "Kingfisher"),
                     .product(name: "SwiftSubtitles", package: "SwiftSubtitles"),
                     .product(name: "FirebaseRemoteConfig", package: "firebase-ios-sdk"),
+                    .product(name: "FirebaseAnalyticsWithoutAdIdSupport", package: "firebase-ios-sdk"),
                     .product(name: "DifferenceKit", package: "DifferenceKit"),
                 ]
             ),

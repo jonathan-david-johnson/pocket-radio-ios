@@ -28,7 +28,7 @@ public class SyncYearListeningProgress: ObservableObject {
     }
 }
 
-class SyncYearListeningHistoryTask: ApiBaseTask {
+class SyncYearListeningHistoryTask: ApiBaseTask, @unchecked Sendable {
     private var token: String?
 
     private let yearToSync: Int32
@@ -199,7 +199,7 @@ public class YearListeningHistory {
             dispatchGroup.enter()
 
             DispatchQueue.global(qos: .userInitiated).async {
-                let syncYearListeningHistory = SyncYearListeningHistoryTask.init(year: yearToSync)
+                let syncYearListeningHistory = SyncYearListeningHistoryTask(year: yearToSync)
 
                 syncYearListeningHistory.start()
 

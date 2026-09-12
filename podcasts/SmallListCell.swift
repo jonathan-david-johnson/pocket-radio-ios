@@ -16,8 +16,8 @@ class SmallListCell: ThemeableCollectionCell {
             subscribeButton.onImage = UIImage(named: "discover_tick")?.tintedImage(ThemeColor.support02())
             subscribeButton.offImage = UIImage(named: "discover_add")?.tintedImage(ThemeColor.primaryIcon02())
 
-            subscribeButton.offAccessibilityLabel = FeatureFlag.useFollowNaming.enabled ? L10n.follow : L10n.subscribe
-            subscribeButton.onAccessibilityLabel = FeatureFlag.useFollowNaming.enabled ? L10n.unfollow : L10n.subscribed
+            subscribeButton.offAccessibilityLabel = L10n.follow
+            subscribeButton.onAccessibilityLabel = L10n.unfollow
         }
     }
 
@@ -49,6 +49,10 @@ class SmallListCell: ThemeableCollectionCell {
     override func awakeFromNib() {
         super.awakeFromNib()
         updateSize()
+
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (view: SmallListCell, _) in
+            view.updateSize()
+        }
     }
 
     func setSelectedState(_ selected: Bool) {
@@ -58,7 +62,7 @@ class SmallListCell: ThemeableCollectionCell {
     func populateFrom(_ discoverPodcast: DiscoverPodcast, isSubscribed: Bool) {
         self.discoverPodcast = discoverPodcast
         if let title = discoverPodcast.title?.localized {
-            podcastTitle.text = title
+            setTitle(title, for: discoverPodcast)
         }
         if let author = discoverPodcast.author {
             podcastAuthor.text = author
@@ -93,7 +97,7 @@ class SmallListCell: ThemeableCollectionCell {
             subscribeButton.shouldAnimate = true
 
             if let title = discoverPodcast?.title?.localized {
-                podcastTitle.text = title
+                setTitle(title, for: info)
             }
             if let author = discoverPodcast?.author {
                 podcastAuthor.text = author
@@ -105,10 +109,22 @@ class SmallListCell: ThemeableCollectionCell {
         }
     }
 
+    private func setTitle(_ title: String, for discoverPodcast: DiscoverPodcast) {
+        let isExplicit = discoverPodcast.isExplicit ?? false
+        if isExplicit {
+            podcastTitle.attributedText = ExplicitBadgeHelper.attributedTitle(title, font: podcastTitle.font)
+        } else {
+            podcastTitle.text = title
+        }
+    }
+
     override func handleThemeDidChange() {
         subscribeButton.tintColor = ThemeColor.primaryIcon02()
         subscribeButton.onImage = UIImage(named: "discover_tick")?.tintedImage(ThemeColor.support02())
         subscribeButton.offImage = UIImage(named: "discover_add")?.tintedImage(ThemeColor.primaryIcon02())
+        if let discoverPodcast, let title = discoverPodcast.title?.localized {
+            setTitle(title, for: discoverPodcast)
+        }
     }
 
     override func prepareForReuse() {
@@ -131,13 +147,5 @@ class SmallListCell: ThemeableCollectionCell {
         podcastImage.updateSizeConstraints(to: max(48, metric.scaledValue(for: 48)))
 
         subscribeButton.updateSizeConstraints(to: max(44, metric.scaledValue(for: 44)))
-    }
-
-    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
-        super.traitCollectionDidChange(previousTraitCollection)
-
-        if previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory {
-            updateSize()
-        }
     }
 }

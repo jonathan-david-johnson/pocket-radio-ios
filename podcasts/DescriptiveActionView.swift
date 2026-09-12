@@ -24,6 +24,10 @@ class DescriptiveActionView: UIView {
         self.iconTintStyle = iconTintStyle
         self.onLinkTap = onLinkTap
         super.init(frame: frame)
+
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (view: DescriptiveActionView, _) in
+            view.updateSize()
+        }
     }
 
     @available(*, unavailable)
@@ -155,8 +159,10 @@ class DescriptiveActionView: UIView {
         config.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 24, bottom: 12, trailing: 24)
 
         let actionButton = UIButton(configuration: config, primaryAction: UIAction(title: action.label, handler: { [weak self] _ in
-            action.action()
+            // Dismiss the sheet before running the action so an action that
+            // presents another screen doesn't hit "already presenting".
             self?.delegate?.animateOut(optionChosen: true)
+            action.action()
         }))
         actionButton.configurationUpdateHandler = { button in
             var config = button.configuration
@@ -183,18 +189,12 @@ class DescriptiveActionView: UIView {
         actionButton.isOn = !action.outline
         actionButton.setup()
         actionButton.buttonTapped = { [weak self] in
-            action.action()
+            // Dismiss the sheet before running the action so an action that
+            // presents another screen doesn't hit "already presenting".
             self?.delegate?.animateOut(optionChosen: true)
+            action.action()
         }
         return actionButton
-    }
-
-    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
-        super.traitCollectionDidChange(previousTraitCollection)
-
-        if traitCollection.preferredContentSizeCategory != previousTraitCollection?.preferredContentSizeCategory {
-            updateSize()
-        }
     }
 
     private func updateSize() {

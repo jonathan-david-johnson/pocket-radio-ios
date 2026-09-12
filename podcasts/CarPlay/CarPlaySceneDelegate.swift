@@ -200,7 +200,7 @@ class CarPlaySceneDelegate: CustomObserver, CPTemplateApplicationSceneDelegate, 
 
     private func updateNowPlayingButtons(template: CPNowPlayingTemplate) {
         let isLiveRadio = PlaybackManager.shared.isLiveStream()
-        let episode = PlaybackManager.shared.currentEpisode() as? Episode
+        let episode = PlaybackManager.shared.currentEpisode as? Episode
 
         let kinds = CarPlayNowPlayingButtonSet.buttons(
             isLiveRadio: isLiveRadio,
@@ -240,7 +240,7 @@ class CarPlaySceneDelegate: CustomObserver, CPTemplateApplicationSceneDelegate, 
         guard let image = UIImage(named: "car_markasplayed") else { return nil }
 
         return CPNowPlayingImageButton(image: image) { _ in
-            guard let episode = PlaybackManager.shared.currentEpisode() else { return }
+            guard let episode = PlaybackManager.shared.currentEpisode else { return }
             AnalyticsEpisodeHelper.shared.currentSource = .carPlay
 
             EpisodeManager.markAsPlayed(episode: episode, fireNotification: true)
@@ -325,7 +325,7 @@ class CarPlaySceneDelegate: CustomObserver, CPTemplateApplicationSceneDelegate, 
     }
 
     func nowPlayingTemplateAlbumArtistButtonTapped(_ nowPlayingTemplate: CPNowPlayingTemplate) {
-        guard let playingEpisode = PlaybackManager.shared.currentEpisode() else { return }
+        guard let playingEpisode = PlaybackManager.shared.currentEpisode else { return }
 
         if let episode = playingEpisode as? Episode, let podcast = episode.parentPodcast() {
             podcastTapped(podcast)

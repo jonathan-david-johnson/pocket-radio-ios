@@ -1,14 +1,28 @@
 import SwiftUI
 import PocketCastsDataModel
+import PocketCastsServer
+import PocketCastsUtils
 
 struct HomeView: View {
     @Environment(AppCoordinator.self) var coordinator
-    @Environment(MainTabRouter.self) var tabRouter: MainTabRouter
+    @Environment(MainTabViewModel.self) var tabRouter: MainTabViewModel
 
-    @State private var model = HomeViewModel()
+    @State private var model: HomeViewModel
+
+    init(model: HomeViewModel) {
+        _model = State(wrappedValue: model)
+    }
 
     enum Layout {
         static let gridSize = CGFloat(250)
+    }
+
+    enum Section: String {
+        case homeNowPlaying
+        case homeUpNext
+        case homeNewReleases
+        case homeNewVideoReleases
+        case homeBanner
     }
 
     var body: some View {
@@ -18,12 +32,13 @@ struct HomeView: View {
                 loadingView
             case .ready:
                 homeView
-            case .empty:
-                emptyView
             }
         }
+        .animation(.easeInOut, value: model.state)
         .task {
+            Analytics.track(.homeShown)
             model.load()
+            model.refresh()
         }
     }
 
@@ -31,111 +46,36 @@ struct HomeView: View {
         ProgressView()
     }
 
-    var emptyView: some View {
-        EmptyDataView(title: L10n.tvPodcastsEmptyTitle, subtitle: L10n.tvPodcastsEmptySubtitle, actionTitle: L10n.tvPodcastsEmptyActionTitle) {
-            tabRouter.selectedTab = .home
-        }
-    }
+    @State private var path = StackPath()
 
     var homeView: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 40) {
-                    Text(L10n.tvHomeKeepListeningTitle)
-                        .font(.title2)
-                        .foregroundStyle(Color.textPrimary)
-                    if let currentPlaying = model.currentPlaying {
-                        EpisodePlayerButton(episode: currentPlaying)
-                            .frame(maxWidth: 864, alignment: .leading)
-                    }
-                    VStack(alignment: .leading, spacing: 24) {
-                        Text(L10n.tvHomeRecommendedForYouTitle)
-                            .font(.title3)
-                            .foregroundStyle(Color.textPrimary)
-                        discoverCollection
-                    }
-                    Text(L10n.tvTabUpNext)
-                        .font(.title3)
-                        .foregroundStyle(Color.textPrimary)
-                    upNextRow
-                    VStack(alignment: .leading, spacing: 24) {
-                        Text(L10n.tvHomeRecentlyPlayed)
-                            .font(.title3)
-                            .foregroundStyle(Color.textPrimary)
-                        recentlyPlayedRow
-                    }
-                    Text(L10n.tvHomeNewReleases)
-                        .font(.title3)
-                        .foregroundStyle(Color.textPrimary)
-                    newReleasesRow
+        NavigationStack(path: $path.navigationPath) {
+            Group {
+                if coordinator.userState.isLoggedIn {
+                    DiscoverAllView(model: tabRouter.discoverHomeSignedInViewModel, source: DiscoverAnalytics.homeSource)
+                } else {
+                    DiscoverAllView(model: tabRouter.discoverHomeSignedOutViewModel, source: DiscoverAnalytics.homeSource)
                 }
             }
-        }
-    }
-
-    @Namespace private var podcastGridNamespace
-
-    var discoverCollection: some View {
-        ScrollView(.horizontal) {
-            LazyHStack(spacing: 0, content: {
-                ForEach(model.podcasts) { podcast in
-                    NavigationLink(value: podcast) {
-                        PodcastImageViewWrapper(podcastUUID: podcast.uuid, size: .page)
-                            .frame(width: Layout.gridSize, height: Layout.gridSize)
-                    }
-                    .buttonStyle(.card)
-                    .padding(24)
-                    .prefersDefaultFocus(model.podcasts.first?.uuid == podcast.uuid, in: podcastGridNamespace)
+            .navigationDestination(for: DiscoverPodcast.self) { podcast in
+                if let uuid = podcast.uuid {
+                    PodcastDetailView(model: PodcastDetailViewModel(podcastUuid: uuid, isDiscover: true))
                 }
-            })
-            .focusScope(podcastGridNamespace)
+            }
+            .navigationDestination(for: DiscoverCategory.self) { discoverCategory in
+                DiscoverPodcastsListView(category: discoverCategory, source: DiscoverAnalytics.homeSource)
+            }
             .navigationDestination(for: Podcast.self) { podcast in
-                PodcastDetailView(model: PodcastDetailViewModel(podcast: podcast))
+                PodcastDetailView(model: PodcastDetailViewModel(podcastUuid: podcast.uuid))
             }
+            .syncNavigationDetail(path: path.navigationPath, tabRouter: tabRouter)
         }
-    }
-    var upNextRow: some View {
-        ScrollView(.horizontal) {
-            LazyHStack(spacing: 24) {
-                ForEach(model.upNext) { episode in
-                    EpisodePlayerButton(episode: episode)
-                        .frame(width: 864)
-                }
-            }
-            .padding(.horizontal, 24)
-        }
-    }
-
-    var recentlyPlayedRow: some View {
-        ScrollView(.horizontal) {
-            LazyHStack(spacing: 0) {
-                ForEach(model.recentlyPlayed) { podcast in
-                    NavigationLink(value: podcast) {
-                        PodcastImageViewWrapper(podcastUUID: podcast.uuid, size: .page)
-                            .frame(width: Layout.gridSize, height: Layout.gridSize)
-                    }
-                    .buttonStyle(.card)
-                    .padding(24)
-                }
-            }
-        }
-    }
-
-    var newReleasesRow: some View {
-        ScrollView(.horizontal) {
-            LazyHStack(spacing: 24) {
-                ForEach(model.newReleases) { episode in
-                    EpisodePlayerButton(episode: episode)
-                        .frame(width: 864)
-                }
-            }
-            .padding(.horizontal, 24)
-        }
+        .environment(path)
     }
 }
 
 #Preview {
-    HomeView()
+    HomeView(model: HomeViewModel())
         .environment(AppCoordinator())
-        .environment(MainTabRouter())
+        .environment(MainTabViewModel())
 }

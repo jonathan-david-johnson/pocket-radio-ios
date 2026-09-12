@@ -19,7 +19,7 @@ class SiriShortcutsManager: CustomObserver {
     }
 
     func defaultSuggestions() -> [INShortcut] {
-        var shortcuts = [resumeLastShortcut(), pauseShortcut(), playNextShortcut(), nextChapterShortcut(), previousChapterShortcut(), sleepTimerShortcut(), extendSleepTimerShortcut()]
+        var shortcuts = [resumeLastShortcut(), pauseShortcut(), playNextShortcut(), nextChapterShortcut(), previousChapterShortcut(), markAsPlayedShortcut(), sleepTimerShortcut(), extendSleepTimerShortcut()]
 
         // only signed in users can use the play suggested shortcut
         if SyncManager.isUserLoggedIn() {
@@ -129,6 +129,11 @@ class SiriShortcutsManager: CustomObserver {
 
     func previousChapterShortcut() -> INShortcut {
         let shortcut = INShortcut(intent: previousChapterIntent())
+        return shortcut!
+    }
+
+    func markAsPlayedShortcut() -> INShortcut {
+        let shortcut = INShortcut(intent: markAsPlayedIntent())
         return shortcut!
     }
 
@@ -294,6 +299,19 @@ class SiriShortcutsManager: CustomObserver {
         return intent
     }
 
+    // MARK: - Mark as played intent
+
+    func markAsPlayedIntent() -> INIntent {
+        let episode = INMediaItem(identifier: Constants.SiriActions.markAsPlayedId,
+                                  title: L10n.siriShortcutMarkAsPlayedTitle,
+                                  type: .podcastEpisode,
+                                  artwork: nil)
+
+        let intent = INPlayMediaIntent(mediaItems: [episode], mediaContainer: nil, playShuffled: false, playbackRepeatMode: .none, resumePlayback: false)
+        intent.suggestedInvocationPhrase = L10n.siriShortcutMarkAsPlayedPhrase
+        return intent
+    }
+
     // MARK: - Timer intents
 
     func setSleepTimerIntent() -> INIntent {
@@ -333,7 +351,7 @@ class SiriShortcutsManager: CustomObserver {
 
     func resumePlayback() -> INPlayMediaIntentResponseCode {
         AnalyticsHelper.siriResume()
-        if PlaybackManager.shared.currentEpisode() != nil {
+        if PlaybackManager.shared.currentEpisode != nil {
             AnalyticsPlaybackHelper.shared.currentSource = analyticsSource
             PlaybackManager.shared.play()
             return INPlayMediaIntentResponseCode.success
@@ -348,10 +366,20 @@ class SiriShortcutsManager: CustomObserver {
         return INPlayMediaIntentResponseCode.success
     }
 
+    func markAsPlayed() -> INPlayMediaIntentResponseCode {
+        AnalyticsHelper.siriMarkAsPlayed()
+        guard let currentEpisode = PlaybackManager.shared.currentEpisode else {
+            return INPlayMediaIntentResponseCode.failureNoUnplayedContent
+        }
+        AnalyticsEpisodeHelper.shared.currentSource = analyticsSource
+        EpisodeManager.markAsPlayed(episode: currentEpisode, fireNotification: true)
+        return INPlayMediaIntentResponseCode.success
+    }
+
     func playUpNext() -> INPlayMediaIntentResponseCode {
         AnalyticsHelper.siriUpNext()
         // unlike when the user taps an episode in Up Next, their intention here is probably to remove the currently playing episode, and go to the next one if it exists
-        guard let currentEpisode = PlaybackManager.shared.currentEpisode(), PlaybackManager.shared.queue.upNextCount() > 0 else {
+        guard let currentEpisode = PlaybackManager.shared.currentEpisode, PlaybackManager.shared.queue.upNextCount() > 0 else {
             return INPlayMediaIntentResponseCode.failureNoUnplayedContent
         }
         PlaybackManager.shared.removeIfPlayingOrQueued(episode: currentEpisode, fireNotification: true, userInitiated: true)
@@ -396,11 +424,16 @@ class SiriShortcutsManager: CustomObserver {
     func skipToNextEpisode() { // ? in podcast or playlist
     }
 
-    func sleepTimer(newTime: Int) -> Bool {
+    func setSleepTimer(duration: TimeInterval) -> Bool {
         AnalyticsHelper.siriSleeptimer()
-        guard let timeInterval = TimeInterval(exactly: newTime) else { return false }
-        PlaybackManager.shared.setSleepTimerInterval(timeInterval)
+        guard let duration = SleepTimerIntentDuration.boundedValue(duration) else { return false }
+        PlaybackManager.shared.setSleepTimerInterval(duration)
         return true
+    }
+
+    func sleepTimer(newTime: Int) -> Bool {
+        guard let duration = TimeInterval(exactly: newTime) else { return false }
+        return setSleepTimer(duration: duration)
     }
 
     func extendSleepTimer(addTime: Int) -> Bool {
@@ -408,7 +441,7 @@ class SiriShortcutsManager: CustomObserver {
         guard let minutes = TimeInterval(exactly: addTime) else { return false }
         let sixtySeconds: TimeInterval = 1.minutes
         let addSeconds = sixtySeconds * minutes
-        PlaybackManager.shared.sleepTimeRemaining += addSeconds
+        PlaybackManager.shared.extendSleepTimer(by: addSeconds, source: .siri)
         return true
     }
 

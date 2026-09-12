@@ -12,12 +12,7 @@ extension CarPlaySceneDelegate {
 
     func filterTapped(_ filter: EpisodeFilter) {
         pushEpisodeList(title: filter.playlistName, emptyTitle: L10n.episodeFilterNoEpisodesTitle, showArtwork: true, playlist: .filter(uuid: filter.uuid)) { () -> [BaseEpisode] in
-            if FeatureFlag.playlistsRebranding.enabled {
-                return DataManager.sharedManager.playlistEpisodes(for: filter, limit: Constants.Limits.maxCarplayItems)
-            } else {
-                let query = PlaylistQueryBuilder.queryFor(filter: filter, episodeUuidToAdd: filter.episodeUuidToAddToQueries(), limit: Constants.Limits.maxCarplayItems)
-                return DataManager.sharedManager.findEpisodesWhere(customWhere: query, arguments: nil)
-            }
+            return DataManager.sharedManager.playlistEpisodes(for: filter, limit: Constants.Limits.maxCarplayItems)
         }
     }
 
@@ -48,7 +43,7 @@ extension CarPlaySceneDelegate {
         guard !PlaybackManager.shared.isActivelyPlaying(episodeUuid: episode.uuid) else { return }
 
         // If the episode is the currently playing one but isn't actively being played, then start playing it
-        if PlaybackManager.shared.isNowPlayingEpisode(episodeUuid: episode.uuid) {
+        if PlaybackManager.shared.isCurrentEpisode(uuid: episode.uuid) {
             PlaybackManager.shared.play()
             return
         }

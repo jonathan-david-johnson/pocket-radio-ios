@@ -14,15 +14,13 @@ public struct MiniPlayerSafeAreaInset: ViewModifier {
     public func body(content: Content) -> some View {
         if isEnabled {
             content
-        } else {
-            content
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     // Adjust the bottom inset only when the mini player is visible
                     Color.clear
                         .frame(height: (isMiniPlayerVisible ? Constants.Values.miniPlayerOffset : 0) * multipler)
                 }
                 .onAppear {
-                    isMiniPlayerVisible = (PlaybackManager.shared.currentEpisode() != nil)
+                    isMiniPlayerVisible = (PlaybackManager.shared.currentEpisode != nil)
                 }
                 .ignoresSafeArea(.keyboard)
                 .onReceive(NotificationCenter.default.publisher(for: Constants.Notifications.miniPlayerDidAppear), perform: { _ in
@@ -31,6 +29,8 @@ public struct MiniPlayerSafeAreaInset: ViewModifier {
                 .onReceive(NotificationCenter.default.publisher(for: Constants.Notifications.miniPlayerDidDisappear), perform: { _ in
                     isMiniPlayerVisible = false
                 })
+        } else {
+            content
         }
     }
 }

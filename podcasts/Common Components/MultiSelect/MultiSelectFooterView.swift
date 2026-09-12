@@ -77,6 +77,11 @@ class MultiSelectFooterView: UIView, MultiSelectActionOrderDelegate {
 
     @IBOutlet var statusLabel: ThemeableLabel!
     @IBOutlet var activityIndicator: ThemeLoadingIndicator!
+
+    @IBOutlet var containerLeadingConstraint: NSLayoutConstraint!
+    @IBOutlet var containerTrailingConstraint: NSLayoutConstraint!
+    @IBOutlet var containerTopConstraint: NSLayoutConstraint!
+    @IBOutlet var containerBottomConstraint: NSLayoutConstraint!
     private var rightAction: MultiSelectAction?
     private var leftAction: MultiSelectAction?
     private var numberOfEpisodes = 0
@@ -97,6 +102,20 @@ class MultiSelectFooterView: UIView, MultiSelectActionOrderDelegate {
         contentView.frame = bounds
         contentView.backgroundColor = UIColor.clear
         backgroundColor = UIColor.clear
+        if LiquidGlass.isEnabled, #available(iOS 26.0, *) {
+            let glass = UIGlassEffect()
+            glass.isInteractive = true
+            blurView.effect = glass
+            containerView.backgroundColor = .clear
+
+            containerLeadingConstraint.constant = 13
+            containerTrailingConstraint.constant = 13
+            containerTopConstraint.constant = 4
+            containerBottomConstraint.constant = 4
+
+            blurView.layer.cornerRadius = 28
+            containerView.layer.cornerRadius = 28
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(handleThemeDidChange), name: Constants.Notifications.themeChanged, object: nil)
     }
 
@@ -206,12 +225,14 @@ class MultiSelectFooterView: UIView, MultiSelectActionOrderDelegate {
             actions = actions.filter { $0 != .share }
         }
 
+        let isUpNextContext = actionDelegate.multiSelectedPlayListEpisodes() != nil
+
         let newLeftAction = MultiSelectHelper.invertActionIfRequired(action: actions[0], actionDelegate: actionDelegate)
         if leftAction != newLeftAction {
             leftAction = newLeftAction
             if let leftAction {
                 leftActionButton.setImage(UIImage(named: leftAction.iconName()), for: .normal)
-                leftActionButton.accessibilityLabel = leftAction.title()
+                leftActionButton.accessibilityLabel = leftAction.title(isUpNextContext: isUpNextContext)
             }
         }
 
@@ -221,7 +242,7 @@ class MultiSelectFooterView: UIView, MultiSelectActionOrderDelegate {
 
             if let rightAction {
                 rightActionButton.setImage(UIImage(named: rightAction.iconName()), for: .normal)
-                rightActionButton.accessibilityLabel = rightAction.title()
+                rightActionButton.accessibilityLabel = rightAction.title(isUpNextContext: isUpNextContext)
             }
         }
     }

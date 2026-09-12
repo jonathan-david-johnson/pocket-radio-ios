@@ -2,11 +2,15 @@ import Foundation
 import PocketCastsUtils
 
 extension MiniPlayerViewController {
-    func hideMiniPlayer(_ animated: Bool) {
+    /// - parameter isTransient: If enabled, hiding temporarily with an intention to
+    /// quickly show it again later.
+    func hideMiniPlayer(_ animated: Bool, isTransient: Bool = false) {
         if LiquidGlass.isEnabled, #available(iOS 26, *) {
             guard let tabBarController = parent as? UITabBarController, tabBarController.bottomAccessory != nil else { return }
             tabBarController.setBottomAccessory(nil, animated: animated)
-            tabBarController.tabBarMinimizeBehavior = .never
+            if !isTransient {
+                tabBarController.tabBarMinimizeBehavior = .never
+            }
             NotificationCenter.postOnMainThread(notification: Constants.Notifications.miniPlayerDidDisappear)
             return
         }
@@ -30,13 +34,13 @@ extension MiniPlayerViewController {
 
     func showMiniPlayer() {
         // only show if something is playing
-        if PlaybackManager.shared.currentEpisode() == nil { return }
+        if PlaybackManager.shared.currentEpisode == nil { return }
 
         if LiquidGlass.isEnabled, #available(iOS 26.0, *) {
             guard let tabBarController = parent as? UITabBarController, tabBarController.bottomAccessory == nil else { return }
             let accessory = UITabAccessory(contentView: view)
+            tabBarController.tabBarMinimizeBehavior = Settings.tabBarMinimizingEnabled ? .onScrollDown : .never
             tabBarController.setBottomAccessory(accessory, animated: true)
-            tabBarController.tabBarMinimizeBehavior = .onScrollDown
             NotificationCenter.postOnMainThread(notification: Constants.Notifications.miniPlayerDidAppear)
             return
         }
@@ -56,7 +60,7 @@ extension MiniPlayerViewController {
     }
 
     func openFullScreenPlayer(completion: (() -> Void)? = nil) {
-        guard PlaybackManager.shared.currentEpisode() != nil else { return }
+        guard PlaybackManager.shared.currentEpisode != nil else { return }
 
         if fullScreenPlayer?.presentingViewController != nil || fullScreenPlayer?.isBeingPresented == true { return }
 
@@ -69,17 +73,27 @@ extension MiniPlayerViewController {
             return
         }
 
+        fullScreenPlayer.nowPlayingItem.placeholderArtwork = podcastArtwork.imageView?.image
+
+        guard let rootController = SceneHelper.rootViewController(includeTopMost: false) else {
+            return
+        }
+
         playerOpenState = .animating
 
-        presentFromRootController(fullScreenPlayer, animated: true) {
+        // UIKit ignores presentations started from a dismissing controller (e.g. the episode
+        // card dismissing itself when Play is tapped), so present from the root instead.
+        if rootController.presentedViewController != nil {
+            rootController.dismiss(animated: true)
+        }
+
+        rootController.present(fullScreenPlayer, animated: true) {
             self.playerOpenState = .open
             self.rootViewController()?.setNeedsStatusBarAppearanceUpdate()
             self.rootViewController()?.setNeedsUpdateOfHomeIndicatorAutoHidden()
             AnalyticsHelper.nowPlayingOpened()
             Analytics.track(.playerShown)
             completion?()
-        } failure: {
-            self.playerOpenState = .closed
         }
     }
 
@@ -110,9 +124,16 @@ extension MiniPlayerViewController {
         view.superview?.layoutIfNeeded()
     }
 
+    /// Re-applies `tabBarMinimizeBehavior` from the current `Settings.tabBarMinimizingEnabled`
+    /// so a toggle flip in Appearance takes effect right away while the mini player is showing.
+    func applyTabBarMinimizingPreference() {
+        guard LiquidGlass.isEnabled, #available(iOS 26.0, *) else { return }
+        guard let tabBarController = parent as? UITabBarController, tabBarController.bottomAccessory != nil else { return }
+        tabBarController.tabBarMinimizeBehavior = Settings.tabBarMinimizingEnabled ? .onScrollDown : .never
+    }
+
     func closeUpNextAndFullPlayer(completion: (() -> Void)? = nil) {
-        if let fullScreenPlayer {
-            _ = fullScreenPlayer.children.map { $0.dismiss(animated: false, completion: nil) }
+        if fullScreenPlayer != nil {
             closeFullScreenPlayer(completion: {
                 completion?()
             })

@@ -43,6 +43,7 @@ extension ServerPodcastManager {
         if let author = podcastJson["author"] as? String {
             podcast.author = author
         }
+        podcast.networkListId = Podcast.networkListId(fromPodcastJson: podcastJson)
         if let url = podcastJson["url"] as? String {
             podcast.podcastUrl = url
         }
@@ -77,6 +78,11 @@ extension ServerPodcastManager {
         }
         if let isPrivate = podcastJson["is_private"] as? Bool {
             podcast.isPrivate = isPrivate
+        }
+        if let isExplicit = podcastJson["explicit"] as? Bool {
+            podcast.isExplicit = isExplicit
+        } else if let isExplicit = podcastJson["explicit"] as? Int {
+            podcast.isExplicit = isExplicit > 0
         }
         if let fundingsJson = podcastJson["fundings"] as? [[String: Any]], let url = fundingsJson.first?["url"] as? String {
             podcast.fundingURL = url
@@ -123,6 +129,12 @@ extension ServerPodcastManager {
 
                 if let type = episodeJson["has_generated_transcript"] as? Bool?, existingEpisode.hasGeneratedTranscript != type {
                     existingEpisode.hasGeneratedTranscript = type
+                    episodeChanged = true
+                }
+
+                let hlsUrl = Episode.hlsUrl(fromEpisodeJson: episodeJson)
+                if existingEpisode.hlsUrl != hlsUrl {
+                    existingEpisode.hlsUrl = hlsUrl
                     episodeChanged = true
                 }
 
@@ -191,6 +203,8 @@ extension ServerPodcastManager {
             if let type = episodeJson["has_generated_transcript"] as? Bool? {
                 episode.hasGeneratedTranscript = type
             }
+
+            episode.hlsUrl = Episode.hlsUrl(fromEpisodeJson: episodeJson)
 
             DataManager.sharedManager.save(episode: episode)
         }

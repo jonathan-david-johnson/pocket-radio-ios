@@ -52,6 +52,8 @@ public class SyncManager {
         UserDefaults.standard.removeObject(forKey: ServerConstants.UserDefaults.subscriptionGiftDays)
         UserDefaults.standard.removeObject(forKey: ServerConstants.UserDefaults.marketingOptInNeedsSyncKey)
         UserDefaults.standard.removeObject(forKey: ServerConstants.UserDefaults.marketingOptInKey)
+        UserDefaults.standard.removeObject(forKey: ServerConstants.UserDefaults.audioOnlyNeedsSyncKey)
+        UserDefaults.standard.removeObject(forKey: ServerConstants.UserDefaults.audioOnlyKey)
         UserDefaults.standard.removeObject(forKey: ServerConstants.UserDefaults.subscriptionGiftAcknowledgementNeedsSyncKey)
         UserDefaults.standard.removeObject(forKey: ServerConstants.UserDefaults.subscriptionGiftAcknowledgement)
         UserDefaults.standard.removeObject(forKey: ServerConstants.UserDefaults.subscriptionPodcasts)
@@ -72,6 +74,26 @@ public class SyncManager {
         KeychainHelper.removeKey(ServerConstants.Values.appleAuthUserIDKey)
     }
 
+    /// Clears the server "last modified" watermarks so the next sync is a full re-fetch,
+    /// without signing the user out. Needed when the database was lost but these
+    /// UserDefaults watermarks survived — otherwise the server returns "not modified"
+    /// and the empty database stays empty.
+    public class func clearSyncWatermarksForFullResync() {
+        FileLog.shared.addMessage("SyncManager.clearSyncWatermarksForFullResync")
+
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: ServerConstants.UserDefaults.lastModifiedServerDate)
+        defaults.removeObject(forKey: ServerConstants.UserDefaults.lastSyncStartDate)
+        defaults.removeObject(forKey: ServerConstants.UserDefaults.lastSyncTime)
+        defaults.removeObject(forKey: ServerConstants.UserDefaults.historyServerLastModified)
+        defaults.removeObject(forKey: ServerConstants.UserDefaults.upNextServerLastModified)
+        // Drop the pending history-clear marker too, else SyncHistoryTask would re-send a
+        // stale clearAll during what should be a pull-only recovery.
+        defaults.removeObject(forKey: ServerConstants.UserDefaults.lastClearHistoryDate)
+
+        ServerSettings.removeFilesLastModifiedKey()
+        ServerSettings.removeFilesUsageLastModifiedKey()
+    }
 }
 
 // MARK: - Sync Reason

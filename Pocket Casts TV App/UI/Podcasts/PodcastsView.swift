@@ -7,7 +7,7 @@ fileprivate enum Layout {
 
 struct PodcastsView<ViewModel: PodcastsViewModelProtocol>: View {
     @Environment(AppCoordinator.self) var coordinator
-    @Environment(MainTabRouter.self) var tabRouter: MainTabRouter
+    @Environment(MainTabViewModel.self) var tabRouter: MainTabViewModel
 
     @State private var model: ViewModel
 
@@ -30,8 +30,14 @@ struct PodcastsView<ViewModel: PodcastsViewModelProtocol>: View {
                 emptyView
             }
         }
+        .animation(.easeInOut, value: model.state)
         .task {
             await model.load()
+            Analytics.track(.podcastsListShown, properties: [
+                "sort_order": "name",
+                "number_of_podcasts": model.items.filter { $0.podcast != nil }.count,
+                "number_of_folders": model.items.filter { $0.folder != nil }.count
+            ])
         }
     }
 
@@ -39,22 +45,32 @@ struct PodcastsView<ViewModel: PodcastsViewModelProtocol>: View {
         ProgressView()
     }
 
+    @State private var path = NavigationPath()
+
     var podcastsView: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 40) {
                     Text(L10n.tvTabPodcasts)
                         .font(.title2)
-                        .foregroundStyle(Color.textPrimary)
+                        .foregroundStyle(Color.pcTextPrimary)
                     podcastGrid
                 }
             }
         }
+        .syncNavigationDetail(path: path, tabRouter: tabRouter)
     }
 
     var emptyView: some View {
-        EmptyDataView(title: L10n.tvPodcastsEmptyTitle, subtitle: L10n.tvPodcastsEmptySubtitle, actionTitle: L10n.tvPodcastsEmptyActionTitle) {
-            tabRouter.selectedTab = .home
+        ContentUnavailableView {
+            Text(L10n.tvPodcastsEmptyTitleNew)
+        } description: {
+            Text(L10n.tvPodcastsEmptySubtitle)
+        } actions: {
+            Button(L10n.tvPodcastsEmptyActionTitle) {
+                Analytics.track(.podcastsListDiscoverButtonTapped)
+                tabRouter.selectedTab = .home
+            }
         }
     }
 
@@ -65,15 +81,24 @@ struct PodcastsView<ViewModel: PodcastsViewModelProtocol>: View {
             ForEach(model.items) { item in
                 if let podcast = item.podcast {
                     NavigationLink(value: podcast) {
-                        PodcastImageViewWrapper(podcastUUID: podcast.uuid, size: .page)
+                        PodcastImage(uuid: podcast.uuid, size: .page)
                             .frame(width: Layout.gridSize, height: Layout.gridSize)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .focusedCardDepth(cornerRadius: 12, style: .surface)
                     }
                     .buttonStyle(.card)
+                    .accessibilityLabel(podcast.title ?? "")
+                    .simultaneousGesture(TapGesture().onEnded {
+                        Analytics.track(.podcastsListPodcastTapped)
+                    })
                 } else if let folder = item.folder {
                     NavigationLink(value: folder) {
                         FolderCardView(folder: folder)
                     }
                     .buttonStyle(.card)
+                    .simultaneousGesture(TapGesture().onEnded {
+                        Analytics.track(.podcastsListFolderTapped)
+                    })
                 }
             }
         }
@@ -90,5 +115,5 @@ struct PodcastsView<ViewModel: PodcastsViewModelProtocol>: View {
 #Preview {
     PodcastsView(model: PodcastsViewModelMock())
         .environment(AppCoordinator())
-        .environment(MainTabRouter())
+        .environment(MainTabViewModel())
 }

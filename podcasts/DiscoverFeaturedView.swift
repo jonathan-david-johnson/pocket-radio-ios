@@ -56,8 +56,8 @@ class DiscoverFeaturedView: ThemeableView {
             subscribeButton.offImage = UIImage(named: "discover_add")
             subscribeButton.tintColor = ThemeColor.contrast02()
 
-            subscribeButton.offAccessibilityLabel = FeatureFlag.useFollowNaming.enabled ? L10n.follow : L10n.subscribe
-            subscribeButton.onAccessibilityLabel = FeatureFlag.useFollowNaming.enabled ? L10n.unfollow : L10n.subscribed
+            subscribeButton.offAccessibilityLabel = L10n.follow
+            subscribeButton.onAccessibilityLabel = L10n.unfollow
         }
     }
 
@@ -75,6 +75,10 @@ class DiscoverFeaturedView: ThemeableView {
     }
 
     private func commonInit() {
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (view: DiscoverFeaturedView, _) in
+            view.updateSize()
+        }
+
         Bundle.main.loadNibNamed("DiscoverFeaturedView", owner: self, options: nil)
         contentView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(contentView)
@@ -97,8 +101,13 @@ class DiscoverFeaturedView: ThemeableView {
         listType.text = isSponsored ? L10n.discoverSponsored : listName.uppercased()
         listType.setLetterSpacing(1.57)
 
+        let isExplicit = discoverPodcast.isExplicit ?? false
         if let title = discoverPodcast.title?.localized {
-            podcastTitle.text = title
+            if isExplicit {
+                podcastTitle.attributedText = ExplicitBadgeHelper.attributedTitle(title, font: podcastTitle.font)
+            } else {
+                podcastTitle.text = title
+            }
         }
 
         if let author = discoverPodcast.author {
@@ -203,14 +212,6 @@ class DiscoverFeaturedView: ThemeableView {
                 titleTopConstraint,
                 titleLeadingConstraint
             ])
-        }
-    }
-
-    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
-        super.traitCollectionDidChange(previousTraitCollection)
-
-        if previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory {
-            updateSize()
         }
     }
 }

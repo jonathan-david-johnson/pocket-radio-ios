@@ -462,7 +462,7 @@ class StationDetailViewController: SimpleNotificationsViewController {
             // where ICY is absent or fires late).
             if let newTop = self.entries.first,
                lyricSync.songKey(for: newTop) != previousTopKey,
-               PlaybackManager.shared.currentEpisode()?.uuid == station.uuid {
+               PlaybackManager.shared.currentEpisode?.uuid == station.uuid {
                 NowPlayingHelper.setRadioTrackInfo(
                     stationId: station.uuid,
                     trackTitle: newTop.title,
@@ -479,8 +479,8 @@ class StationDetailViewController: SimpleNotificationsViewController {
     }
 
     private func updatePlayButton() {
-        let isCurrentStation = PlaybackManager.shared.currentEpisode()?.uuid == station.uuid
-        let playing = isCurrentStation && PlaybackManager.shared.playing()
+        let isCurrentStation = PlaybackManager.shared.currentEpisode?.uuid == station.uuid
+        let playing = isCurrentStation && PlaybackManager.shared.isPlaying
         var config = playButton.configuration
         config?.title = playing ? "Pause" : "Play"
         config?.image = UIImage(systemName: playing ? "pause.fill" : "play.fill")
@@ -488,8 +488,8 @@ class StationDetailViewController: SimpleNotificationsViewController {
     }
 
     private func togglePlay() {
-        let isCurrentStation = PlaybackManager.shared.currentEpisode()?.uuid == station.uuid
-        if isCurrentStation && PlaybackManager.shared.playing() {
+        let isCurrentStation = PlaybackManager.shared.currentEpisode?.uuid == station.uuid
+        if isCurrentStation && PlaybackManager.shared.isPlaying {
             PlaybackManager.shared.pause()
         } else {
             RadioPlaybackStarter.shared.reload(station: station, source: .player, prefetchTracklist: false, republishWidgetState: false)

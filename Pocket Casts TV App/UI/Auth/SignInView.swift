@@ -7,86 +7,122 @@ struct SignInView: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    let manualLogin: Bool = true
+    enum LoginType: Int, CaseIterable {
+        case qr
+        case manual
 
-    enum Layout {
-        static let gridSize = CGFloat(272)
-        static let qrSize = CGFloat(240)
-    }
-
-    var attributed: AttributedString {
-        let baseString = L10n.tvSignInEnterCodeGoUrl("pocketcasts.com/pair", "https://pocketcasts.com/pair")
-        var attributedString = (try? AttributedString(markdown: baseString)) ?? AttributedString(baseString)
-
-        var linkStyle = AttributeContainer()
-        linkStyle.foregroundColor = Color.textPrimary
-        linkStyle.underlineStyle = .single
-
-        for run in attributedString.runs where run.link != nil {
-            attributedString[run.range].mergeAttributes(linkStyle)
+        var description: String {
+            switch self {
+            case .qr: L10n.tvUserSignInOptionQr
+            case .manual: L10n.tvUserSignInOptionManual
+            }
         }
-        return attributedString
     }
+
+    @State private var loginType: LoginType = .qr
 
     var body: some View {
         ZStack(alignment: .top) {
-            VStack(spacing: 32) {
+            VStack(spacing: 64) {
                 Spacer()
-                Image(ImageResource.pcLogo)
                 Text(L10n.tvSignInTitle)
-                    .font(.title)
-                Text(L10n.tvSignInSubtitle)
-                    .font(.headline)
-                    .foregroundStyle(Color.textSecondary)
-                Spacer()
-                if manualLogin {
-                    usernamePasswordLogin
-                } else {
-                    QRCodeView()
+                    .font(.title3.weight(.medium))
+                    .foregroundColor(Color.pcTextPrimary)
+                Picker(L10n.tvUserSignInLoginType, selection: $loginType) {
+                    ForEach(LoginType.allCases, id: \.self) { type in
+                        Text(type.description).tag(type)
+                    }
                 }
-                Spacer()
-                separator
-                Text(L10n.tvSignInEnterCode)
-                    .font(.headline)
-                    .foregroundStyle(Color.textSecondary)
-                qrCodeDigits
-                Text(attributed)
-                    .font(.headline)
-                    .foregroundStyle(Color.textSecondary)
+                .pickerStyle(.segmented)
+                .frame(width: 500)
+                // Mode-specific content area, fixed height so the title
+                // and picker above never shift when switching modes.
+                VStack(spacing: 64) {
+                    switch loginType {
+                    case .manual:
+                        usernamePasswordLogin
+                    case .qr:
+                        if case .error(_, let message) = model.pairing.state {
+                            qrCodeError(message: message)
+                        } else {
+                            HStack(spacing: 64) {
+                                QRCodeView(url: model.pairing.pairURLComplete)
+                                StepList(steps: steps)
+                            }
+                            QRCodeDigits(digits: model.pairing.codes)
+                        }
+                    }
+                }
+                .animation(.easeInOut, value: loginType)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
+            .padding(.top, 80)
+        }
+        .task(id: loginType) {
+            switch loginType {
+            case .qr:
+                await model.pairing.start()
+            case .manual:
+                // Clear any leftover error so it doesn't leak across login modes.
+                model.state = .start
             }
         }
-        .task {
-            if !manualLogin {
-                model.signinWait()
-            }
+        .onChange(of: loginType) {
+            Analytics.track(.signInTypeTapped, properties: ["type": loginType == .qr ? "qr" : "password"])
         }
         .onChange(of: model.state) {
-            if case .finished = model.state {
-                dismiss()
-                coordinator.state = .userSync
+            switch model.state {
+            case .finished:
+                finishSignIn(source: "password")
+            case .error(let error, _):
+                Analytics.track(.userSignInFailed, properties: ["source": "password", "error_code": (error as NSError).code])
+            default:
+                break
             }
         }
-    }
-
-    var qrCodeDigits: some View {
-        HStack(spacing: 8) {
-            ForEach(Array(model.codes.enumerated()), id: \.offset) { _, code in
-                Text(code)
-                    .font(.caption2)
-                    .foregroundStyle(Color.textSecondary)
-                    .padding()
-                    .background(Color.backgroundActive50)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+        .onChange(of: model.pairing.state) {
+            switch model.pairing.state {
+            case .finished:
+                finishSignIn(source: "qr_code")
+            case .error(let error, _):
+                Analytics.track(.userSignInFailed, properties: ["source": "qr_code", "error_code": (error as NSError).code])
+            default:
+                break
             }
         }
+        .background(Color.pcBackgroundBase)
     }
 
-    var separator: some View {
-        Rectangle()
-        .foregroundColor(.clear)
-        .frame(width: 566, height: 1)
-        .background(Color.textDisabled)
+    var steps: [String] {
+        [
+            L10n.tvCreateAccountStepScan(model.pairing.pairURLPretty),
+            L10n.tvCreateAccountStepLogin,
+            L10n.tvCreateAccountStepConfirmCode
+        ]
+    }
 
+    private func finishSignIn(source: String) {
+        Analytics.track(.userSignedIn, properties: ["source": source])
+        dismiss()
+        coordinator.state = .userSync
+    }
+
+    func qrCodeError(message: String) -> some View {
+        ContentUnavailableView {
+            Label(L10n.tvLogInQrCodeErrorTitle, systemImage: "wifi.exclamationmark")
+        } description: {
+            Text(message)
+        } actions: {
+            Button {
+                Task {
+                    await model.pairing.start()
+                }
+            } label: {
+                Text(L10n.tryAgain)
+                    .frame(minWidth: 300)
+            }
+        }
+        .padding(.top, 64)
     }
 
     @FocusState private var focusedField: Field?
@@ -99,14 +135,14 @@ struct SignInView: View {
     @State private var password = ""
 
     var usernamePasswordLogin: some View {
-        VStack {
-            TextField("Username", text: $username)
+        VStack(spacing: 32) {
+            TextField(L10n.tvUserSignInUsernamePlaceholder, text: $username)
                 .textContentType(.username)
                 .focused($focusedField, equals: .username)
                 .submitLabel(.next)
                 .onSubmit { focusedField = .password }
 
-            SecureField("Password", text: $password)
+            SecureField(L10n.signInPasswordPrompt, text: $password)
                 .textContentType(.password)
                 .focused($focusedField, equals: .password)
                 .submitLabel(.done)
@@ -125,10 +161,11 @@ struct SignInView: View {
             } label: {
                 switch model.state {
                 case .start, .error:
-                    Text("Sign In")
+                    Text(L10n.accountLogin)
                         .frame(minWidth: 300)
                 case .waiting:
                     ProgressView()
+                        .accessibilityLabel(L10n.tvUserSignInSigningIn)
                 default:
                     EmptyView()
                 }

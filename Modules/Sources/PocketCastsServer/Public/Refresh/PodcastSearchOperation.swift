@@ -1,6 +1,6 @@
 import Foundation
 
-class PodcastSearchOperation: Operation {
+class PodcastSearchOperation: Operation, @unchecked Sendable {
     private let completion: (PodcastSearchResponse?) -> Void
     private let searchQuery: MainServerHandler.PodcastSearchQuery
 
@@ -75,7 +75,6 @@ class PodcastSearchOperation: Operation {
             }
 
             self.dispatchGroup.leave()
-
         }.resume()
         _ = dispatchGroup.wait(timeout: .now() + 15.seconds)
 

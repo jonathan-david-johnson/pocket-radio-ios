@@ -12,7 +12,7 @@ protocol RadioEpisodeLoading {
 
 private struct ProductionRadioEpisodeLoader: RadioEpisodeLoading {
     func currentEpisodeUuid() -> String? {
-        PlaybackManager.shared.currentEpisode()?.uuid
+        PlaybackManager.shared.currentEpisode?.uuid
     }
 
     func load(station: RadioStation) {
@@ -20,7 +20,11 @@ private struct ProductionRadioEpisodeLoader: RadioEpisodeLoading {
     }
 
     func togglePlayPause() {
-        PlaybackActionHelper.playPause()
+        // `PlaybackActionHelper` became `@MainActor` upstream, and this loader is
+        // reached from off-main callers (intents, widget). Hop rather than assume.
+        Task { @MainActor in
+            PlaybackActionHelper.playPause()
+        }
     }
 }
 

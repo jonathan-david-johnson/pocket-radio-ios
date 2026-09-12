@@ -62,7 +62,7 @@ final class MiniPlayerScrollingTitleView: UIView {
         for label in [primaryLabel, trailingLabel] {
             label.numberOfLines = 1
             label.lineBreakMode = .byClipping
-            label.adjustsFontForContentSizeCategory = false
+            label.adjustsFontForContentSizeCategory = true
             scrollContainer.addSubview(label)
         }
 
@@ -85,9 +85,44 @@ final class MiniPlayerScrollingTitleView: UIView {
             name: UIAccessibility.reduceMotionStatusDidChangeNotification,
             object: nil
         )
+
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (view: MiniPlayerScrollingTitleView, _) in
+            view.invalidateIntrinsicContentSize()
+            view.setNeedsLayout()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Restarts the marquee from the beginning of its pause-then-scroll cycle.
+    func restartAnimation() {
+        scheduleAnimation()
+    }
+
+    /// Picks up another instance's marquee phase, so a snapshot clone scrolls
+    /// in lock-step with the live mini player instead of restarting from
+    /// frame zero. Call after this view is in a window so layer-local time
+    /// conversion is well-defined.
+    func synchronizeAnimation(with other: MiniPlayerScrollingTitleView) {
+        let otherLayer = other.scrollContainer.layer
+        guard let transformAnim = otherLayer.animation(forKey: Self.transformAnimationKey),
+              let maskAnim = other.gradientMask.animation(forKey: Self.maskAnimationKey),
+              let transformCopy = transformAnim.copy() as? CAAnimation,
+              let maskCopy = maskAnim.copy() as? CAAnimation else { return }
+
+        // Translate beginTime from the source layer's local time space to
+        // ours via host time — the same numerical value can map to a
+        // different phase across layer hierarchies, which is why the previous
+        // direct-copy attempt didn't fully sync.
+        let beginInHost = otherLayer.convertTime(transformAnim.beginTime, to: nil)
+        let beginInLocal = scrollContainer.layer.convertTime(beginInHost, from: nil)
+        transformCopy.beginTime = beginInLocal
+        maskCopy.beginTime = beginInLocal
+
+        layer.mask = gradientMask
+        scrollContainer.layer.add(transformCopy, forKey: Self.transformAnimationKey)
+        gradientMask.add(maskCopy, forKey: Self.maskAnimationKey)
+    }
 
     @objc private func reduceMotionStatusDidChange() {
         scheduleAnimation()

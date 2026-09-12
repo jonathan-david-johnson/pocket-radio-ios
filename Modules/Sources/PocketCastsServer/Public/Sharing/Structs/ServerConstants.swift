@@ -38,12 +38,24 @@ public enum ServerConstants {
             production() ? "https://lists.pocketcasts.com/" : "https://lists.pocketcasts.net/"
         }
 
+        public static func whatsNew() -> String {
+            production() ? "https://static.pocketcasts.com/whats-new/v1/ios/" : "https://static.pocketcasts.net/whats-new/v1/ios/"
+        }
+
         public static var search: String {
             production() ? "https://search.pocketcasts.com/" : "https://search.pocketcasts.net/"
         }
 
         public static var generatedTranscripts: String {
             production() ? "https://shownotes.pocketcasts.com/generated_transcripts/" : "https://shownotes.pocketcasts.net/generated_transcripts/"
+        }
+
+        public static var tvPair: String {
+            production() ? "https://pocketcasts.com/pair" : "https://pocketcasts.net/pair"
+        }
+
+        public static var tvCreate: String {
+            production() ? "https://pocketcasts.com/create" : "https://pocketcasts.net/create"
         }
 
         public static let support = "https://support.pocketcasts.com/ios/"
@@ -104,7 +116,13 @@ public enum ServerConstants {
     }
 
     public enum Values {
-        static let apiScope = "mobile"
+        static var apiScope: String {
+            #if os(tvOS)
+            return "tv"
+            #else
+            return "mobile"
+            #endif
+        }
         static let deviceTypeiOS: Int32 = 1
         static let syncingEmailKey = "SJSyncingEmail"
         static let syncingPasswordKey = "SJSyncingPwd"
@@ -142,6 +160,10 @@ public enum ServerConstants {
         static let subscriptionTier = "SJSubscriptionTier"
         public static let marketingOptInKey = "SJMarketingOptIn"
         static let marketingOptInNeedsSyncKey = "SJMarketingOptInNeedsSync"
+        public static let audioOnlyKey = "SJAudioOnly"
+        static let audioOnlyNeedsSyncKey = "SJAudioOnlyNeedsSync"
+        public static let disableAiChaptersKey = "SJDisableAiChapters"
+        static let disableAiChaptersNeedsSyncKey = "SJDisableAiChaptersNeedsSync"
         static let subscriptionGiftAcknowledgementNeedsSyncKey = "SJGiftAcknowledgementNeedsSync"
         static let filesLastModifiedKey = "UserFilesLastModified"
         static let statsStartDate = "StatsStartDate"

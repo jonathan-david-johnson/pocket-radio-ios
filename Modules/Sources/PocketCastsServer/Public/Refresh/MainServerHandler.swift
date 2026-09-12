@@ -131,7 +131,6 @@ public class MainServerHandler {
             } catch {
                 completion(ImportOpmlResponse.failedResponse())
             }
-
         }.resume()
     }
 
@@ -165,7 +164,6 @@ public class MainServerHandler {
             } catch {
                 completion(ExportPodcastsResponse.failedResponse())
             }
-
         }.resume()
     }
 
@@ -196,7 +194,6 @@ public class MainServerHandler {
             } catch {
                 completion(ShareListResponse.failedResponse())
             }
-
         }.resume()
     }
 
@@ -235,12 +232,14 @@ public class MainServerHandler {
         }
 
         let pushEnabled = ServerConfig.shared.syncDelegate?.isPushEnabled() ?? false
+        let newEpisodePushEnabled = !FeatureFlag.newEpisodeNotificationsPushOptOut.enabled
+            || (ServerConfig.shared.syncDelegate?.isNewEpisodeNotificationsEnabled() ?? false)
 
         var jsonRequest = jsonWithStandardParams(uniqueId: uniqueId)
         jsonRequest["push_sound"] = "11" // for legacy reasons, this is always the push sound we send, since it's no longer configurable
         jsonRequest["podcasts"] = podcasts.map(\.uuid).joined(separator: ",")
         jsonRequest["last_episodes"] = podcasts.map { $0.forceRefreshEpisodeFrom ?? $0.latestEpisodeUuid ?? "" }.joined(separator: ",")
-        jsonRequest["push_messages_on"] = podcasts.map { (pushEnabled && $0.isPushEnabled) ? "1" : "0" }.joined()
+        jsonRequest["push_messages_on"] = podcasts.map { (pushEnabled && newEpisodePushEnabled && $0.pushEnabled) ? "1" : "0" }.joined()
         if let pushToken = ServerSettings.pushToken() {
             jsonRequest["push_token"] = pushToken
         }
@@ -315,7 +314,6 @@ public class MainServerHandler {
 
             FileLog.shared.addMessage("Server indicated podcast refresh was successful")
             completion(true)
-
         }.resume()
     }
 
@@ -349,7 +347,6 @@ public class MainServerHandler {
             } catch {
                 completion(nil)
             }
-
         }.resume()
     }
 

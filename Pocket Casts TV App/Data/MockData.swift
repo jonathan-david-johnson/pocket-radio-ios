@@ -1,53 +1,8 @@
 import Foundation
 import PocketCastsUtils
 import PocketCastsDataModel
+import PocketCastsServer
 import SwiftUI
-
-struct MockEpisode: Identifiable, Hashable, Equatable {
-    var uuid: String
-    var title: String
-    var publishedDate: Date
-    var duration: Double
-
-    var id: String {
-        return uuid
-    }
-
-    func displayableTitle() -> String {
-        return title
-    }
-
-    var image: String
-}
-
-struct MockPodcast: Identifiable, Hashable, Equatable {
-    var id: String
-    var title: String
-    var author: String?
-    var podcastDescription: String?
-    var image: String
-    var episodes: [MockEpisode]
-    var network: String?
-    var website: String?
-    var frequency: String?
-    var nextEpisodeDate: String?
-}
-
-struct MockFolder: Identifiable, Hashable, Equatable {
-    var id: String
-    var name: String
-    var podcasts: [MockPodcast]
-
-    var podcastImages: [String] { podcasts.map(\.image) }
-}
-
-struct MockPlaylist: Identifiable, Hashable, Equatable {
-    var id: String
-    var title: String
-    var manual: Bool
-    var episodes: [MockEpisode]
-    var color: Color
-}
 
 struct MockData {
 
@@ -136,112 +91,6 @@ struct MockData {
         "The Invention of Money"
     ]
 
-    private static var podcasts: [MockPodcast] = []
-
-    static func makePodcasts() -> [MockPodcast] {
-        guard podcasts.isEmpty else {
-            return podcasts
-        }
-        let numberOfPodcasts = 48
-        var results = [MockPodcast]()
-        for i in (0..<numberOfPodcasts) {
-            var episodes: [MockEpisode] = []
-            let podcastImageName = "Covers/login-cover-\( (i % 10) + 1)"
-            for j in (0..<numberOfPodcasts) {
-                let titleIndex = (i + j) % episodeTitles.count
-                episodes.append(MockEpisode(uuid: UUID().uuidString, title: episodeTitles[titleIndex], publishedDate: Date.now.weeksAgo(j), duration: Double.random(in: (5.minutes...1.hours)), image: podcastImageName))
-            }
-            let frequencies = ["Released weekly", "Released daily", "Released biweekly", "Released monthly"]
-            let nextDays = ["Next episode Monday", "Next episode Tuesday", "Next episode Wednesday", "Next episode Thursday", "Next episode Friday"]
-            results.append(MockPodcast(
-                id: UUID().uuidString,
-                title: podcastNames[i % podcastNames.count],
-                author: authorNames[i % authorNames.count],
-                podcastDescription: "Here is a fun description for this",
-                image: podcastImageName,
-                episodes: episodes,
-                network: authorNames[i % authorNames.count],
-                website: "https://\(podcastNames[i % podcastNames.count].lowercased().replacingOccurrences(of: " ", with: "")).com",
-                frequency: frequencies[i % frequencies.count],
-                nextEpisodeDate: nextDays[i % nextDays.count]
-            ))
-        }
-        self.podcasts = results
-        return self.podcasts
-    }
-
-    private static var folders: [MockFolder] = []
-
-    static func makeFolders() -> [MockFolder] {
-        guard folders.isEmpty else { return folders }
-        let allPodcasts = makePodcasts()
-        let result = [
-            makeFolder(name: "News", podcastCount: 4, from: allPodcasts, startIndex: 0),
-            makeFolder(name: "Comedy", podcastCount: 1, from: allPodcasts, startIndex: 4),
-            makeFolder(name: "Tech", podcastCount: 2, from: allPodcasts, startIndex: 5),
-            makeFolder(name: "Science", podcastCount: 3, from: allPodcasts, startIndex: 7),
-            makeFolder(name: "My super duper long folder name that keeps on going", podcastCount: 4, from: allPodcasts, startIndex: 10)
-        ]
-        self.folders = result
-        return result
-    }
-
-    private static func makeFolder(name: String, podcastCount: Int, from allPodcasts: [MockPodcast], startIndex: Int) -> MockFolder {
-        let folderPodcasts = Array(allPodcasts[startIndex..<min(startIndex + podcastCount, allPodcasts.count)])
-        return MockFolder(
-            id: UUID().uuidString,
-            name: name,
-            podcasts: folderPodcasts
-        )
-    }
-
-    static private var playlists: [MockPlaylist] = []
-
-    static func makePlaylists() -> [MockPlaylist] {
-        guard playlists.isEmpty else {
-            return playlists
-        }
-        let numberOfEpisodes = 12
-        var results = [MockPlaylist]()
-        let playlistsSpec: [(String, Bool, Color)] = [
-            ("New releases", true, Color(red: 0.15, green: 0.25, blue: 0.5)),
-            ("In progress", true, Color(red: 0.5, green: 0.17, blue: 0.15)),
-            ("TV Stuff", false, Color(red: 0.21, green: 0.22, blue: 0.14)),
-            ("My favorites", true, Color(red: 0.5, green: 0.35, blue: 0.12))
-        ]
-        let podcasts = makePodcasts()
-        for (index, (name, smart, color)) in playlistsSpec.enumerated() {
-            var episodes: [MockEpisode] = []
-            for i in (0..<Int.random(in: 0..<numberOfEpisodes)) {
-                let podcast = podcasts.randomElement()
-                if let episode = podcast?.episodes.randomElement() {
-                    episodes.append(episode)
-                }
-            }
-            results.append(MockPlaylist(id: UUID().uuidString, title: name, manual: !smart, episodes: episodes, color: color))
-        }
-        self.playlists = results
-        return results
-    }
-
-    static var upNext: [MockEpisode] = []
-
-    static func makeUpNext() -> [MockEpisode] {
-        guard upNext.isEmpty else {
-            return upNext
-        }
-        let numberOfEpisodes = 48
-        var episodes: [MockEpisode] = []
-        for i in (0..<numberOfEpisodes) {
-            let podcast = podcasts.randomElement()
-            if let episode = podcast?.episodes.randomElement() {
-                episodes.append(episode)
-            }
-        }
-        upNext = episodes
-        return episodes
-    }
-
     static var stubPodcasts: [Podcast] = []
 
     static func makeStubPodcasts() -> [Podcast] {
@@ -265,6 +114,43 @@ struct MockData {
         }
         self.stubPodcasts = results
         return self.stubPodcasts
+    }
+
+    /// Real Pocket Casts podcast UUIDs, so mock podcasts render real artwork from
+    /// the image CDN instead of blank placeholders in previews and demos.
+    static let artworkUUIDs = [
+        "e7a6f7d0-02f2-0133-1c51-059c869cc4eb",
+        "da3271a0-69e7-0132-d9fd-5f4c86fd3263",
+        "3782b780-0bc5-012e-fb02-00163e1b201c",
+        "9349e8d0-a87f-013a-d8af-0acc26574db2",
+        "82e37e80-755d-0138-eddc-0acc26574db2",
+        "9478cc80-7c42-0138-edfe-0acc26574db2",
+        "37082d70-e945-0137-b6eb-0acc26574db2",
+        "62200ab0-b7ec-0139-f606-0acc26574db2",
+        "b0689300-ecd3-012e-e054-525400c11844",
+        "68504d20-dc2b-012e-da14-525400c11844",
+        "43e949f0-60ec-0131-7415-723c91aeae46"
+    ]
+
+    static var stubArtworkPodcasts: [Podcast] = []
+
+    /// Stub podcasts whose `uuid` resolves to real artwork on the image CDN.
+    /// Use these where the mock should look populated (e.g. the signing-in animation).
+    static func makeStubArtworkPodcasts() -> [Podcast] {
+        guard stubArtworkPodcasts.isEmpty else {
+            return stubArtworkPodcasts
+        }
+        var results = [Podcast]()
+        for (i, uuid) in artworkUUIDs.enumerated() {
+            let podcast = Podcast()
+            podcast.id = Int64(i)
+            podcast.uuid = uuid
+            podcast.title = podcastNames[i % podcastNames.count]
+            podcast.author = authorNames[i % authorNames.count]
+            results.append(podcast)
+        }
+        stubArtworkPodcasts = results
+        return results
     }
 
     private static func makeStubFolder(name: String, podcastCount: Int, from allPodcasts: [Podcast], startIndex: Int) -> Folder {
@@ -293,5 +179,112 @@ struct MockData {
         ]
         self.stubFolders = result
         return result
+    }
+
+    static let sampleMediaURL = URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_4x3/bipbop_4x3_variant.m3u8")!
+
+    static var stubEpisodes: [Episode] = []
+    static func makeStubEpisodes() -> [Episode] {
+        guard stubEpisodes.isEmpty else { return stubEpisodes }
+        let allPodcasts = makeStubPodcasts()
+        var episodes: [Episode] = []
+        for j in (0..<allPodcasts.count) {
+            let podcast = allPodcasts[j]
+            for i in (0..<8) {
+                let titleIndex = (i + j) % episodeTitles.count
+                let episode = Episode()
+                episode.uuid = UUID().uuidString
+                episode.title = episodeTitles[titleIndex]
+                episode.publishedDate = Date.now.weeksAgo(j)
+                episode.duration = Double.random(in: (5.minutes...1.hours))
+                episode.playedUpTo = Double.random(in: (0...episode.duration))
+                episode.podcastUuid = podcast.uuid
+                episode.downloadUrl = sampleMediaURL.absoluteString
+                episodes.append(episode)
+            }
+        }
+        stubEpisodes = episodes
+        return stubEpisodes
+    }
+
+    private static var stubPlaylists: [EpisodeFilter] = []
+
+    static let playlistsSpec: [(String, Bool, Color)] = [
+        ("New releases", true, Color(red: 0.15, green: 0.25, blue: 0.5)),
+        ("In progress", true, Color(red: 0.5, green: 0.17, blue: 0.15)),
+        ("TV Stuff", false, Color(red: 0.21, green: 0.22, blue: 0.14)),
+        ("My favorites", true, Color(red: 0.5, green: 0.35, blue: 0.12))
+    ]
+
+    static func makeStubPlaylists() -> [EpisodeFilter] {
+        guard stubPlaylists.isEmpty else {
+            return stubPlaylists
+        }
+        let numberOfEpisodes = 12
+        var results = [EpisodeFilter]()
+
+        for (i, (name, smart, _)) in playlistsSpec.enumerated() {
+            var episodes: [Episode] = Self.makeStubEpisodes()
+            for _ in (0..<Int.random(in: 0..<numberOfEpisodes)) {
+                if let episode = episodes.randomElement() {
+                    episodes.append(episode)
+                }
+            }
+            let playlist = EpisodeFilter()
+            playlist.uuid = UUID().uuidString
+            playlist.playlistName = name
+            playlist.manual = !smart
+            playlist.customIcon = 0
+            playlist.sortPosition = Int32(i)
+            results.append(playlist)
+        }
+        self.stubPlaylists = results
+        return results
+    }
+
+    static func makeStubDiscoveryPodcast() -> DiscoverPodcast {
+        var podcast = DiscoverPodcast()
+        podcast.uuid = UUID().uuidString
+        podcast.title = podcastNames.first
+        podcast.author = authorNames.first
+        podcast.shortDescription = episodeTitles.first
+
+        return podcast
+    }
+
+    static func makeStubDiscoveryPodcasts() -> [DiscoverPodcast] {
+        var result = [DiscoverPodcast]()
+        for (index, name) in podcastNames.enumerated() {
+            var podcast = DiscoverPodcast()
+            podcast.uuid = UUID().uuidString
+            podcast.title = name
+            podcast.author = authorNames[index]
+            podcast.shortDescription = episodeTitles[index]
+
+            result.append(podcast)
+        }
+
+        return result
+    }
+
+    static func makeStubVideoEpisodePodcasts() -> [DiscoverEpisode] {
+        var result = [DiscoverEpisode]()
+        let podcastsUuids: [String] = ["b0689300-ecd3-012e-e054-525400c11844", "68504d20-dc2b-012e-da14-525400c11844", "43e949f0-60ec-0131-7415-723c91aeae46"]
+        let podcastsNames: [String] = ["This Week in Tech (Video)", "TED Talks Music", "Daily Tech News Show (VIDEO)"]
+        let episodesUuid: [String] = ["ed625ff3-d996-4d82-8921-0b823297bdfc", "cede2a30-0163-0133-1b93-059c869cc4eb", "5806902f-7214-46db-a7f7-78d2b0141a5f"]
+        let episodesTitle: [String] = ["The Great Beagle Migration - Pope Leo XIV's 1st Encyclical & Ferrari's 1st EV", "An 11-year-old prodigy performs old-school jazz | Joey Alexander", "The Practical Ferrari – DTNS Live 5129"]
+        let urls: [String] = ["https://pscrb.fm/rss/p/mgln.ai/e/294/cdn.twit.tv/video/twit/twit1086/twit1086_h264m_1920x1080.mp4", "https://download.ted.com/products/87704.mp4?apikey=172BB350-0009", "https://dtns.muffincdn.com/DTNS20260528.mp4"]
+
+        for (index, uuid) in podcastsUuids.enumerated() {
+            let episode = DiscoverEpisode(uuid: episodesUuid[index], title: episodesTitle[index], duration: 600, url: urls[index], podcastUuid: uuid, podcastTitle: podcastsNames[index], type: nil, published: Date.now, season: 0, number: 0)
+
+            result.append(episode)
+        }
+
+        return result
+    }
+
+    static func makeStubBanner(_ type: BannerType) -> DiscoverItem {
+        return DiscoverItem(id: type.rawValue, type: "banner", summaryStyle: "inline_banner", regions: [])
     }
 }

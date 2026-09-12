@@ -1,12 +1,13 @@
-import BackgroundTasks
+import AppIntents
 import AutomatticRemoteLogging
+import BackgroundTasks
+import Combine
 import Firebase
 import FirebasePerformance
 import Foundation
 import PocketCastsDataModel
 import PocketCastsServer
 import PocketCastsUtils
-import Combine
 import Sentry
 
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -29,7 +30,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     private var backgroundSignOutListener: BackgroundSignOutListener?
     private(set) var appInstallState: AppLifecycleAnalytics.AppInstallState?
 
-    lazy var whatsNew: WhatsNew = WhatsNew()
+    lazy var whatsNew = WhatsNew()
 
     // MARK: - App Lifecycle
 
@@ -49,23 +50,18 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if let appInstallState {
             switch appInstallState {
             case .updated:
-                Settings.notificationsNewEpisodes = UserDefaults.standard.bool(forKey: Constants.UserDefaults.pushEnabled)
-
-                if FeatureFlag.encourageAccountCreation.enabled, !Settings.hasShownInformationalViewModal {
-                    Settings.shouldShowInitialOnboardingFlow = !SyncManager.isUserLoggedIn()
-                }
-                if FeatureFlag.playlistsRebranding.enabled {
-                    Settings.shouldShowNewFilterTip = false
-                    Settings.shouldShowNewFilterTipInCreationView = false
-                }
+                Settings.shouldShowNewFilterTip = false
+                Settings.shouldShowNewFilterTipInCreationView = false
             case .installed:
                 //Never show the podcast feed reload tooltip for fresh install
                 Settings.shouldShowPodcastFeeReloadTip = false
                 Settings.shouldShowPodcastViewChangesTip = false
                 Settings.shouldShowRecentlyPlayedSortingTip = false
-                if FeatureFlag.playlistsRebranding.enabled {
-                    Settings.shouldShowPlaylistsOnboarding = false
-                }
+                Settings.shouldShowUpNextSortDurationTip = false
+                Settings.shouldShowPlaylistsOnboarding = false
+                // Anchor the EAC cadence on fresh install so the modal waits a full interval before
+                // its first show (existing users updating leave it nil and see it immediately).
+                Settings.encourageAccountCreationReferenceDate = Date()
             case .sameVersion:
                 break
             }
@@ -84,6 +80,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         GoogleCastManager.sharedManager.setup()
 
         setupRoutes()
+        PocketCastsAppShortcutsProvider.updateAppShortcutParameters()
 
         if Settings.shouldResultEndOfYearSyncStatus {
             Settings.setHasSyncedEpisodesForPlayback(false, year: 2025)
@@ -170,6 +167,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         setupSignOutListener()
         appLifecycleAnalytics.didBecomeActive()
 
+        if FeatureFlag.whatsNewFeed.enabled {
+            WhatsNewManager.shared.refreshIfNeeded()
+        }
+
         // give the network a few seconds to come up before refreshing, also only refresh if the last refresh was more than 5 minutes ago
         let lastUpdateTime = ServerSettings.lastRefreshEndTime()
         if DateUtil.hasEnoughTimePassed(since: lastUpdateTime, time: AppDelegate.minTimeBetweenRefreshes) {
@@ -183,6 +184,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             }
         }
         PlaybackManager.shared.updateIdleTimer()
+        PlaybackManager.shared.reconcileSleepTimerLiveActivity()
     }
 
     func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String, completionHandler: @escaping () -> Void) {
@@ -198,7 +200,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
-        let token = deviceToken.reduce("") { $0 + String(format: "%02X", $1) }
+        let token = deviceToken.reduce(into: "") { $0 += String(format: "%02X", $1) }
 
         PodcastManager.shared.didReceiveToken(token)
     }
@@ -312,13 +314,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func updateRemoteFeatureFlags(forceReload: Bool = false) {
         guard BuildEnvironment.current != .debug || forceReload else { return }
-
-        if FeatureFlag.newSettingsStorage.enabled != Settings.newSettingsStorage {
-            if FeatureFlag.newSettingsStorage.enabled {
-                SettingsStore.appSettings.importUserDefaults()
-                DataManager.sharedManager.importPodcastSettings()
-            }
-        }
 
         try? FeatureFlagOverrideStore().override(FeatureFlag.slumber, withValue: Settings.slumberPromoCode?.isEmpty == false)
 

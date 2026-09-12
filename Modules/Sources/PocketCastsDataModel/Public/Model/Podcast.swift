@@ -58,10 +58,12 @@ public class Podcast: NSObject, Identifiable {
     @objc public var folderUuid: String?
     @objc public var usedCustomEffectsBefore = false
     @objc public var isPrivate = false
+    @objc public var isExplicit = false
     @objc public var fundingURL: String?
+    @objc public var networkListId: String?
 
     @GRDBIgnore
-    public var settings: PodcastSettings = PodcastSettings.defaults
+    public var settings = PodcastSettings.defaults
 
     // transient not saved to database
     @GRDBIgnore
@@ -79,35 +81,14 @@ public class Podcast: NSObject, Identifiable {
     }
 
     public func autoAddToUpNextOn() -> Bool {
-        if FeatureFlag.newSettingsStorage.enabled {
-            return settings.addToUpNext
-        } else {
-            return autoAddToUpNext == AutoAddToUpNextSetting.addLast.rawValue || autoAddToUpNext == AutoAddToUpNextSetting.addFirst.rawValue
-        }
+        autoAddToUpNext == AutoAddToUpNextSetting.addLast.rawValue || autoAddToUpNext == AutoAddToUpNextSetting.addFirst.rawValue
     }
 
     public func autoAddToUpNextSetting() -> AutoAddToUpNextSetting? {
-        if FeatureFlag.newSettingsStorage.enabled {
-            if settings.addToUpNext {
-                switch settings.addToUpNextPosition {
-                case .top:
-                    return .addFirst
-                case .bottom:
-                    return .addLast
-                }
-            } else {
-                return .off
-            }
-        } else {
-            return AutoAddToUpNextSetting(rawValue: autoAddToUpNext)
-        }
+        AutoAddToUpNextSetting(rawValue: autoAddToUpNext)
     }
 
     public func setAutoAddToUpNext(setting: AutoAddToUpNextSetting) {
-        if FeatureFlag.newSettingsStorage.enabled {
-            settings.addToUpNext = setting != .off
-            settings.addToUpNextPosition = setting == .addFirst ? .top : .bottom
-        }
         autoAddToUpNext = setting.rawValue
     }
 
@@ -143,7 +124,7 @@ public class Podcast: NSObject, Identifiable {
     }
 }
 
-public enum TrimSilenceAmount: Int32, Codable {
+public enum TrimSilenceAmount: Int32, Codable, CaseIterable {
     case off = 0, low = 3, medium = 5, high = 10
 }
 
@@ -176,7 +157,7 @@ extension TrimSilence {
 }
 
 extension Podcast {
-    public override var debugDescription: String {
+    override public var debugDescription: String {
         "Podcast: \(uuid) - \(title ?? "missing title")"
     }
 }

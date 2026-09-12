@@ -3,9 +3,11 @@ import PocketCastsDataModel
 
 struct FolderCardView: View {
 
+    var folder: Folder
     @State var model: FolderCardViewModel
 
     init(folder: Folder) {
+        self.folder = folder
         self.model = FolderCardViewModel(folder: folder)
     }
 
@@ -31,7 +33,12 @@ struct FolderCardView: View {
         .frame(width: cardSize, height: cardSize)
         .background(Color(uiColor: AppTheme.folderColor(colorInt: model.folder.color)))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+        .focusedCardDepth(cornerRadius: 12, style: .surface)
         .task {
+            model.load()
+        }
+        .onChange(of: folder) {
+            model.folder = folder
             model.load()
         }
     }
@@ -52,7 +59,7 @@ struct FolderCardView: View {
     @ViewBuilder
     private func coverImage(at index: Int) -> some View {
         if index < model.topPodcastsUuids.count {
-            PodcastImageViewWrapper(podcastUUID: model.topPodcastsUuids[index], size: .list)
+            PodcastImage(uuid: model.topPodcastsUuids[index], size: .list)
                 .frame(width: coverSize, height: coverSize)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
         } else {

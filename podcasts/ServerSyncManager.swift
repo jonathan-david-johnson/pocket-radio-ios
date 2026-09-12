@@ -41,7 +41,7 @@ class ServerSyncManager: ServerSyncDelegate {
     // MARK: - Episode functions
 
     func episodeStarredChanged(episode: Episode) {
-        if PlaybackManager.shared.isNowPlayingEpisode(episodeUuid: episode.uuid) {
+        if PlaybackManager.shared.isCurrentEpisode(uuid: episode.uuid) {
             PlaybackManager.shared.nowPlayingStarredChanged()
         }
         NotificationCenter.postOnMainThread(notification: Constants.Notifications.episodeStarredChanged, object: episode.uuid)
@@ -149,6 +149,14 @@ class ServerSyncManager: ServerSyncDelegate {
         false
         #else
         NotificationsHelper.shared.pushEnabled()
+        #endif
+    }
+
+    func isNewEpisodeNotificationsEnabled() -> Bool {
+        #if APPCLIP || os(tvOS)
+        false
+        #else
+        NotificationsGroup.newEpisodes.isEnabled
         #endif
     }
 

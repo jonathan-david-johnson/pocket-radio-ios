@@ -1,16 +1,21 @@
 import UIKit
 import PocketCastsServer
 
-class HorizontalCollectionListViewController: ThemedHostingController<HorizontalCollectionList>, DiscoverSummaryProtocol {
+class HorizontalCollectionListViewController: ThemedHostingController<HorizontalCollectionListRowView>, DiscoverSummaryProtocol {
 
     let model: HorizontalCollectionModel
 
-    init() {
-        model = HorizontalCollectionModel()
-        super.init(rootView: HorizontalCollectionList(model: model))
+    var serverHandler: DiscoverServerHandling {
+        get { model.serverHandler }
+        set { model.serverHandler = newValue }
     }
 
-    @MainActor required dynamic init?(coder aDecoder: NSCoder) {
+    init() {
+        model = HorizontalCollectionModel()
+        super.init(rootView: HorizontalCollectionListRowView(model: model))
+    }
+
+    @MainActor dynamic required init?(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
@@ -30,5 +35,27 @@ class HorizontalCollectionListViewController: ThemedHostingController<Horizontal
             AnalyticsHelper.listImpression(listId: listId, category: categoryId)
         }
     }
-
 }
+
+#if DEBUG
+
+import SwiftUI
+
+#Preview("Collection") {
+    let section = HorizontalCollectionListViewController()
+    section.serverHandler = PreviewDiscoverServerHandler(
+        podcastCollection: DiscoverPreviewData.podcastCollection(
+            title: "Sounds for sleeping",
+            subtitle: "Staff picks",
+            description: "Nine shows for winding down, chosen by the people who make Pocket Casts.",
+            shortDescription: "Chosen by the Pocket Casts team",
+            podcasts: DiscoverPreviewData.podcasts(9)
+        )
+    )
+    return DiscoverSectionPreview(
+        section: section,
+        item: DiscoverPreviewData.item(.collectionSummary, title: "Collection")
+    )
+}
+
+#endif

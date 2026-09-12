@@ -81,19 +81,9 @@ class PlaylistManager {
     }
 
     class func createNewPlaylist() -> EpisodeFilter {
-        let playlist = EpisodeFilter()
-        playlist.uuid = UUID().uuidString
+        let playlist = EpisodeFilter.makeDefault()
         playlist.playlistName = L10n.filtersDefaultNewFilter
-        playlist.syncStatus = SyncStatus.notSynced.rawValue
         playlist.sortPosition = nextSortPosition()
-        playlist.filterPartiallyPlayed = true
-        playlist.filterUnplayed = true
-        playlist.filterFinished = true
-        playlist.filterAudioVideoType = AudioVideoFilter.all.rawValue
-        playlist.filterAllPodcasts = true
-        playlist.filterDownloaded = true
-        playlist.filterNotDownloaded = true
-        playlist.customIcon = 0
         playlist.isNew = true
         return playlist
     }
@@ -108,15 +98,8 @@ class PlaylistManager {
         for playlist in playlists {
             guard playlist.autoDownloadEpisodes else { continue }
 
-            let query: String
-            let episodes: [Episode]
-            if FeatureFlag.playlistsRebranding.enabled {
-                query = PlaylistQueryBuilder.query(clause: .episode, for: playlist, episodeUuidToAdd: playlist.episodeUuidToAddToQueries(), limit: Int(playlist.maxAutoDownloadEpisodes()))
-                episodes = DataManager.sharedManager.findPlaylistEpisodesWhere(query: query, arguments: nil)
-            } else {
-                query = PlaylistQueryBuilder.queryFor(filter: playlist, episodeUuidToAdd: playlist.episodeUuidToAddToQueries(), limit: Int(playlist.maxAutoDownloadEpisodes()))
-                episodes = DataManager.sharedManager.findEpisodesWhere(customWhere: query, arguments: nil)
-            }
+            let query = PlaylistQueryBuilder.query(clause: .episode, for: playlist, episodeUuidToAdd: playlist.episodeUuidToAddToQueries(), limit: Int(playlist.maxAutoDownloadEpisodes()))
+            let episodes = DataManager.sharedManager.findPlaylistEpisodesWhere(query: query, arguments: nil)
 
             for episode in episodes {
                 if episode.downloaded(pathFinder: DownloadManager.shared) || episode.queued() { continue }

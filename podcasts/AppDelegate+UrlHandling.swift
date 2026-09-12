@@ -83,7 +83,7 @@ extension AppDelegate {
                 strongSelf.openPlayerWhenReadyFromExternalEvent()
                 AnalyticsHelper.forceTouchPlay()
             } else if shortcut == "markAsPlayed" {
-                if let episode = PlaybackManager.shared.currentEpisode() {
+                if let episode = PlaybackManager.shared.currentEpisode {
                     AnalyticsEpisodeHelper.shared.currentSource = .appIconMenu
                     EpisodeManager.markAsPlayed(episode: episode, fireNotification: true)
                     AnalyticsHelper.forceTouchMarkPlayed()
@@ -222,8 +222,8 @@ extension AppDelegate {
 
             strongSelf.openPlayerWhenReadyFromExternalEvent()
 
-            if PlaybackManager.shared.isNowPlayingEpisode(episodeUuid: episode.uuid) {
-                if !PlaybackManager.shared.playing() {
+            if PlaybackManager.shared.isCurrentEpisode(uuid: episode.uuid) {
+                if !PlaybackManager.shared.isPlaying {
                     PlaybackManager.shared.play()
                 }
             } else {
@@ -239,7 +239,7 @@ extension AppDelegate {
 
             guard let baseEpisode = DataManager.sharedManager.findBaseEpisode(uuid: episodeUuid) else { return true }
 
-            if PlaybackManager.shared.isNowPlayingEpisode(episodeUuid: baseEpisode.uuid) {
+            if PlaybackManager.shared.isCurrentEpisode(uuid: baseEpisode.uuid) {
                 strongSelf.openPlayerWhenReadyFromExternalEvent()
                 Analytics.track(.widgetInteraction, properties: ["action": "now_playing"])
             } else {
@@ -453,6 +453,7 @@ extension AppDelegate {
         setupNewFeaturesRoutes()
         setupProfileRoutes()
         setupTestFlightIAPRoutes()
+        setupTVPairingRoutes()
     }
 
     func setupOnboardingRoutes() {
@@ -517,6 +518,18 @@ extension AppDelegate {
                 return true
             }
             NavigationManager.sharedManager.navigateTo(NavigationManager.settingsProfileKey, data: [NavigationManager.profileRowKey: row])
+            return true
+        }
+    }
+
+    func setupTVPairingRoutes() {
+        JLRoutes.global().addRoute("/pair") { [weak self] parameters -> Bool in
+            guard self != nil else {
+                return true
+            }
+            let userCode = parameters["user_code"] as? String
+
+            NavigationManager.sharedManager.navigateTo(NavigationManager.deviceApprovePageKey, data: [NavigationManager.deviceApproveCodeKey: userCode as Any])
             return true
         }
     }

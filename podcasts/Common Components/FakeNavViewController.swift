@@ -19,19 +19,12 @@ class FakeNavViewController: PCViewController, UIScrollViewDelegate {
         }
     }
 
-    enum NavDisplayMode {
-        case navController, card
-    }
-
-    var showNavBarOnHide = true
-
-    var displayMode = NavDisplayMode.navController
     var closeTapped: (() -> Void)?
 
     override func viewDidLoad() {
         super.viewDidLoad()
 
-        let navBar = LegacyFakeNavigationBar(displayMode: displayMode)
+        let navBar = LegacyFakeNavigationBar()
         navBar.onCloseTapped = { [weak self] in
             self?.closeTapped?()
         }
@@ -63,36 +56,12 @@ class FakeNavViewController: PCViewController, UIScrollViewDelegate {
         }
     }
 
-    override func viewWillDisappear(_ animated: Bool) {
-        super.viewWillDisappear(animated)
-
-        if displayMode == .navController, showNavBarOnHide {
-            if let navController = navigationController {
-                navController.setNavigationBarHidden(false, animated: true)
-            } else {
-                // there's a case when iOS pops a tab that it takes away our navigationController earlier than normal, handle that here
-                NotificationCenter.postOnMainThread(notification: Constants.Notifications.unhideNavBarRequested)
-            }
-        }
-    }
-
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
 
-        if let window = view.window {
-            let statusBarHeight = displayMode == .card ? 9 : UIUtil.statusBarHeight(in: window)
-            navBar.height = FakeNavViewController.navBarBaseHeight + statusBarHeight
+        if view.window != nil {
+            navBar.height = FakeNavViewController.navBarBaseHeight + 9
         }
-    }
-
-    func navBarHeight(window: UIWindow) -> CGFloat {
-        navBar.height - window.safeAreaInsets.top
-    }
-
-    func addGoogleCastBtn() {
-        let button = PCGoogleCastButton(frame: CGRect(x: 320, y: 21, width: 44, height: 44))
-        button.addTarget(self, action: #selector(castButtonTapped), for: .touchUpInside)
-        navBar.addRightActionButton(button)
     }
 
     @discardableResult func addRightAction(image: UIImage?, accessibilityLabel: String, action: Selector) -> UIButton {
@@ -124,10 +93,6 @@ class FakeNavViewController: PCViewController, UIScrollViewDelegate {
     func setShadowVisible(_ visible: Bool) {
         navBar.setShadowVisible(visible)
     }
-
-    func updateNavigationBar(position: CGFloat) {
-        navBar.snapToScroll(offset: position, threshold: scrollPointToChangeTitle)
-    }
 }
 
 private final class LegacyFakeNavigationBar: UIView {
@@ -151,13 +116,11 @@ private final class LegacyFakeNavigationBar: UIView {
     }
 
     private let titleLabel = UILabel()
-    private let displayMode: FakeNavViewController.NavDisplayMode
     private var heightConstraint: NSLayoutConstraint!
     private var titleMaxWidthConstraint: NSLayoutConstraint!
     private var backButtonLeadingConstraint: NSLayoutConstraint!
 
-    init(displayMode: FakeNavViewController.NavDisplayMode) {
-        self.displayMode = displayMode
+    init() {
         self.backButton = UIButton(frame: CGRect(x: 0, y: 21, width: 40, height: 44))
         super.init(frame: .zero)
         setUp()
@@ -177,22 +140,13 @@ private final class LegacyFakeNavigationBar: UIView {
 
         backButton.isPointerInteractionEnabled = true
         backButton.addTarget(self, action: #selector(backButtonTapped), for: .touchUpInside)
-        let backImage = displayMode == .navController ? UIImage(systemName: "chevron.backward") : UIImage(named: "episode-close")
-        backButton.setImage(backImage, for: .normal)
+        backButton.setImage(UIImage(named: "episode-close"), for: .normal)
         backButton.accessibilityLabel = L10n.close
         backButton.accessibilityIdentifier = "Close"
         addSubview(backButton)
         backButton.translatesAutoresizingMaskIntoConstraints = false
-        var margin: CGFloat = 0
-        var buttonSize: CGFloat = 44
-        if displayMode == .navController {
-            buttonSize = 32
-            backButton.layer.cornerRadius = buttonSize / 2
-            backButton.layer.masksToBounds = true
-            margin = 16
-        }
-        let leadingOffset: CGFloat = displayMode == .navController ? margin : 6
-        backButtonLeadingConstraint = backButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: leadingOffset)
+        let buttonSize: CGFloat = 44
+        backButtonLeadingConstraint = backButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6)
         NSLayoutConstraint.activate([
             backButton.widthAnchor.constraint(equalToConstant: buttonSize),
             backButton.heightAnchor.constraint(equalToConstant: buttonSize),
@@ -226,23 +180,7 @@ private final class LegacyFakeNavigationBar: UIView {
     func addRightActionButton(_ button: UIButton) {
         button.isPointerInteractionEnabled = true
         addSubview(button)
-        var buttonSize: CGFloat = 44
-        var imageSize: CGFloat = 24
-        if displayMode == .navController {
-            buttonSize = 32
-            imageSize = 20
-            button.imageView?.contentMode = .scaleAspectFit
-            if let imageView = button.imageView {
-                imageView.translatesAutoresizingMaskIntoConstraints = false
-                imageView.frame = CGRect(x: 0, y: 0, width: imageSize, height: imageSize)
-                NSLayoutConstraint.activate([
-                    imageView.widthAnchor.constraint(equalToConstant: imageSize),
-                    imageView.heightAnchor.constraint(equalToConstant: imageSize),
-                ])
-            }
-            button.layer.cornerRadius = buttonSize / 2
-            button.layer.masksToBounds = true
-        }
+        let buttonSize: CGFloat = 44
         button.translatesAutoresizingMaskIntoConstraints = false
         if rightActionButtons.isEmpty {
             // if there are no other buttons, anchor this one to the edge
@@ -291,7 +229,6 @@ private final class LegacyFakeNavigationBar: UIView {
         layer.shadowOpacity = opacity
     }
 
-    /// Animates a title fade and chrome transition when the scroll position crosses the threshold.
     func updateForScroll(offset: CGFloat, threshold: CGFloat, title: String?) {
         let scrolledToY = offset + height
         if scrolledToY > threshold, self.title == nil {
@@ -300,16 +237,6 @@ private final class LegacyFakeNavigationBar: UIView {
         } else if scrolledToY < threshold, self.title != nil {
             setTitleAnimated(nil)
             setTransparent(true, animated: true)
-        }
-    }
-
-    /// Snaps the chrome to match the given scroll position without animation; leaves the title alone.
-    func snapToScroll(offset: CGFloat, threshold: CGFloat) {
-        let scrolledToY = offset + height
-        if scrolledToY > threshold {
-            setTransparent(false, animated: false)
-        } else if scrolledToY < threshold {
-            setTransparent(true, animated: false)
         }
     }
 

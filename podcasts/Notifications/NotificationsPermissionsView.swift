@@ -6,6 +6,9 @@ class NotificationsPermissionsViewModel: ObservableObject {
     @Published var newsletterOptIn: Bool = true
     @Published var notificationsOptIn: Bool = true
 
+    /// Only ask to subscribe when there's an account to attach the newsletter to.
+    let showNewsletterOptIn = SyncManager.isUserLoggedIn()
+
     func setupPermissions() async {
         let coordinator = NotificationsCoordinator.shared
         await coordinator.requestAndSetupInitialPermissions()
@@ -76,7 +79,7 @@ struct NotificationsPermissionsView: View {
 
     @EnvironmentObject var theme: Theme
 
-    @StateObject var viewModel: NotificationsPermissionsViewModel = NotificationsPermissionsViewModel()
+    @StateObject var viewModel = NotificationsPermissionsViewModel()
 
     @ViewBuilder
     private func optionRow(for option: NotificationsPermissionsViewModel.NotificationOption) -> some View {
@@ -111,22 +114,8 @@ struct NotificationsPermissionsView: View {
         ZStack(alignment: .bottom) {
             ScrollView {
                 VStack(spacing: 0) {
-                    if FeatureFlag.newOnboardingAccountCreation.enabled {
-                        Spacer()
-                            .frame(maxHeight: 136)
-                    } else {
-                        Button(action: {
-                            Analytics.track(.notificationsPermissionsNotNowTapped)
-                            dismissAction()
-                        }) {
-                            HStack {
-                                Spacer()
-                                Text(L10n.eoyNotNow)
-                                    .foregroundStyle(theme.primaryInteractive01)
-                                    .font(.body.weight(.medium))
-                            }
-                        }
-                    }
+                    Spacer()
+                        .frame(maxHeight: 136)
                     Image("notifications_permissions_banner")
                     Spacer().frame(height: 24)
                     Text(L10n.notificationsPermissionsTitle)
@@ -139,15 +128,15 @@ struct NotificationsPermissionsView: View {
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer()
-                    if FeatureFlag.newOnboardingAccountCreation.enabled {
-                        VStack(alignment: .leading, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 24) {
+                        if viewModel.showNewsletterOptIn {
                             optionRow(for: .newsletter)
-                            optionRow(for: .notifications)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 34)
-                        .padding(.horizontal, 4)
+                        optionRow(for: .notifications)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 34)
+                    .padding(.horizontal, 4)
                     Spacer()
                     Rectangle().fill(.clear).frame(height: 44)
                 }
@@ -156,8 +145,10 @@ struct NotificationsPermissionsView: View {
             ZStack {
                 Button(action: {
                     Analytics.track(.notificationsPermissionsAllowTapped)
-                    viewModel.saveNewsletterOptIn()
-                    viewModel.trackNewsletterOptIn()
+                    if viewModel.showNewsletterOptIn {
+                        viewModel.saveNewsletterOptIn()
+                        viewModel.trackNewsletterOptIn()
+                    }
                     Task {
                         if viewModel.notificationsOptIn {
                             await viewModel.setupPermissions()
@@ -165,7 +156,7 @@ struct NotificationsPermissionsView: View {
                         dismissAction()
                     }
                 }) {
-                    Text(FeatureFlag.newOnboardingAccountCreation.enabled ? L10n.notificationsPermissionsSavePreferences : L10n.notificationsPermissionsAction)
+                    Text(L10n.notificationsPermissionsSavePreferences)
                         .textStyle(RoundedButton())
                 }
             }

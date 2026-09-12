@@ -7,6 +7,7 @@ import PocketCastsDataModel
 class StarredFilterOverlayController: PCViewController {
     private static let starredEpisodeCellId = "StarredEpisodeCellId"
     private static let smartRuleHeaderCellId = "SmartRuleHeaderCellId"
+    private static let previewCellId = "EpisodePreviewCell"
 
     var filterToEdit: EpisodeFilter!
     var analyticsSource: AnalyticsSource = .filters
@@ -18,7 +19,7 @@ class StarredFilterOverlayController: PCViewController {
             tableView.delegate = self
             tableView.translatesAutoresizingMaskIntoConstraints = false
             tableView.register(UITableViewCell.self, forCellReuseIdentifier: Self.smartRuleHeaderCellId)
-            tableView.register(UINib(nibName: "EpisodePreviewCell", bundle: nil), forCellReuseIdentifier: FilterPreviewViewController.previewCellId)
+            tableView.register(UINib(nibName: "EpisodePreviewCell", bundle: nil), forCellReuseIdentifier: Self.previewCellId)
             tableView.rowHeight = UITableView.automaticDimension
             tableView.estimatedRowHeight = UITableView.automaticDimension
         }
@@ -73,17 +74,18 @@ class StarredFilterOverlayController: PCViewController {
         navigationController?.navigationBar.prefersLargeTitles = true
         navigationItem.largeTitleDisplayMode = .always
 
-        let appearance = UINavigationBarAppearance()
-        appearance.backgroundColor = AppTheme.colorForStyle(.primaryUi01)
-        appearance.largeTitleTextAttributes = [
-            NSAttributedString.Key.foregroundColor: AppTheme.colorForStyle(.primaryText01)
-        ]
-        appearance.titleTextAttributes = [
-            NSAttributedString.Key.foregroundColor: AppTheme.colorForStyle(.primaryText01)
-        ]
-        navigationController?.navigationBar.scrollEdgeAppearance = appearance
-        navigationController?.navigationBar.standardAppearance = appearance
-        navigationController?.navigationBar.sizeToFit()
+        if !LiquidGlass.isEnabled {
+            let appearance = UINavigationBarAppearance()
+            appearance.backgroundColor = AppTheme.colorForStyle(.primaryUi01)
+            appearance.largeTitleTextAttributes = [
+                NSAttributedString.Key.foregroundColor: AppTheme.colorForStyle(.primaryText01)
+            ]
+            appearance.titleTextAttributes = [
+                NSAttributedString.Key.foregroundColor: AppTheme.colorForStyle(.primaryText01)
+            ]
+            navigationController?.navigationBar.scrollEdgeAppearance = appearance
+            navigationController?.navigationBar.standardAppearance = appearance
+        }
     }
 
     private func setupViewModel() {
@@ -144,8 +146,6 @@ class StarredFilterOverlayController: PCViewController {
             tableView.topAnchor.constraint(equalTo: view.topAnchor, constant: 0),
             tableView.bottomAnchor.constraint(equalTo: footerView.topAnchor, constant: 0)
         ])
-
-        view.layoutSubviews()
     }
 
     private func setupSaveButtonTitle() {
@@ -196,7 +196,7 @@ extension StarredFilterOverlayController: UITableViewDataSource, UITableViewDele
             return cell
         }
 
-        let cell = tableView.dequeueReusableCell(withIdentifier: FilterPreviewViewController.previewCellId, for: indexPath) as! EpisodePreviewCell
+        let cell = tableView.dequeueReusableCell(withIdentifier: Self.previewCellId, for: indexPath) as! EpisodePreviewCell
         cell.imageLeftPadding.constant = 16.0
         cell.style = .primaryUi01
         if let listEpisode = episodes[safe: indexPath.row] {

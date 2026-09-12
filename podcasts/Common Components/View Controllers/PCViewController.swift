@@ -5,21 +5,50 @@ class PCViewController: SimpleNotificationsViewController {
     var largeTitleFont = UIFont.systemFont(ofSize: 31, weight: .bold)
 
     var googleCastBtn: UIBarButtonItem?
+
+    private var _customRightBtn: UIBarButtonItem?
+
     var customRightBtn: UIBarButtonItem? {
-        didSet {
+        get { _customRightBtn }
+        set {
+            _customRightBtn = newValue
             refreshRightButtons()
         }
     }
 
-    var extraRightButtons: [UIBarButtonItem] = [] {
-        didSet {
+    private var _extraRightButtons: [UIBarButtonItem] = []
+
+    var extraRightButtons: [UIBarButtonItem] {
+        get { _extraRightButtons }
+        set {
+            _extraRightButtons = newValue
             refreshRightButtons()
+        }
+    }
+
+    /// Replaces `customRightBtn`, optionally cross-fading the change via the navigation bar.
+    func setCustomRightBtn(_ button: UIBarButtonItem?, animated: Bool) {
+        _customRightBtn = button
+        refreshRightButtons(animated: animated)
+    }
+
+    /// Replaces `extraRightButtons`, optionally cross-fading the change via the navigation bar.
+    func setExtraRightButtons(_ buttons: [UIBarButtonItem], animated: Bool) {
+        _extraRightButtons = buttons
+        refreshRightButtons(animated: animated)
+    }
+
+    var useTransparentNavigationBarAppearance = false {
+        didSet {
+            setupNavBar(animated: false)
         }
     }
 
     private var navIconsColor: UIColor?
     private var navTitleColor: UIColor?
     private var navBgColor: UIColor?
+
+    private var isNavBarScrolled = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -31,9 +60,15 @@ class PCViewController: SimpleNotificationsViewController {
 
         if supportsGoogleCast {
             let castButton = PCGoogleCastButton(frame: CGRect(x: 0, y: 0, width: 24, height: 24))
-            castButton.tintColor = navIconsColor ?? AppTheme.navBarIconsColor()
-            googleCastBtn = UIBarButtonItem(customView: castButton)
             castButton.addTarget(self, action: #selector(castButtonTapped), for: .touchUpInside)
+            if LiquidGlass.isEnabled {
+                castButton.tintColor = .label
+            } else if useTransparentNavigationBarAppearance {
+                FakeNavBarButton.applyStyle(to: castButton)
+            } else {
+                castButton.tintColor = navIconsColor ?? AppTheme.navBarIconsColor()
+            }
+            googleCastBtn = UIBarButtonItem(customView: castButton)
 
             refreshRightButtons()
         } else if customRightBtn != nil || !extraRightButtons.isEmpty {
@@ -62,6 +97,11 @@ class PCViewController: SimpleNotificationsViewController {
 
         if let title, !title.isEmpty {
             setupNavBar(animated: animated)
+        } else if useTransparentNavigationBarAppearance {
+            // `setupNavBar` is gated on a non-empty title, but transparent-bar subclasses (which
+            // often use `navigationItem.titleView` and leave `title` empty) still need the bar's
+            // global appearance restored — another VC in the stack may have overwritten it.
+            setTransparentNavBarScrolled(isNavBarScrolled)
         }
         refreshRightButtons()
     }
@@ -70,7 +110,7 @@ class PCViewController: SimpleNotificationsViewController {
         super.viewDidAppear(animated)
 
         if supportsGoogleCast {
-            NotificationCenter.default.addObserver(self, selector: #selector(refreshRightButtons), name: Constants.Notifications.googleCastStatusChanged, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(_refreshRightButtons), name: Constants.Notifications.googleCastStatusChanged, object: nil)
         }
         NotificationCenter.default.addObserver(self, selector: #selector(appWasBackgrounded), name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appWillBecomeActive), name: UIApplication.willEnterForegroundNotification, object: nil)
@@ -98,7 +138,11 @@ class PCViewController: SimpleNotificationsViewController {
         NotificationCenter.default.removeObserver(self, name: UIApplication.willEnterForegroundNotification, object: nil)
     }
 
-    @objc func refreshRightButtons() {
+    @objc private func _refreshRightButtons() {
+        refreshRightButtons(animated: false)
+    }
+
+    func refreshRightButtons(animated: Bool = false) {
         if supportsGoogleCast || !extraRightButtons.isEmpty {
             var buttons = [UIBarButtonItem]()
             if let customRightBtn {
@@ -108,10 +152,10 @@ class PCViewController: SimpleNotificationsViewController {
                 buttons.append(googleCastBtn)
             }
             buttons.append(contentsOf: extraRightButtons)
-            effectiveNavigationItem.rightBarButtonItems = buttons
+            effectiveNavigationItem.setRightBarButtonItems(buttons, animated: animated)
         } else {
-            effectiveNavigationItem.rightBarButtonItems = nil
-            effectiveNavigationItem.rightBarButtonItem = customRightBtn
+            effectiveNavigationItem.setRightBarButtonItems(nil, animated: animated)
+            effectiveNavigationItem.setRightBarButton(customRightBtn, animated: animated)
         }
     }
 
@@ -134,7 +178,14 @@ class PCViewController: SimpleNotificationsViewController {
     }
 
     private func setupNavBar(animated: Bool) {
+        guard !LiquidGlass.isEnabled else { return }
+
         guard let navController = navigationController else { return }
+
+        guard !useTransparentNavigationBarAppearance else {
+            configureTransparentAppearance()
+            return
+        }
 
         let navigationBar = navController.navigationBar
         let titleColor = navTitleColor ?? AppTheme.navBarTitleColor()
@@ -165,6 +216,44 @@ class PCViewController: SimpleNotificationsViewController {
             navigationBar.standardAppearance = appearance
             navigationBar.scrollEdgeAppearance = appearance
             navigationBar.tintColor = iconsColor
+        }
+    }
+
+    private func configureTransparentAppearance() {
+        setTransparentNavBarScrolled(isNavBarScrolled)
+    }
+
+    /// Toggles the navigation bar between its at-edge (transparent) and scrolled (blurred) styles,
+    /// and forwards the new state to any `FakeNavBarStylable` bar buttons so their tint and background
+    /// crossfade in step. Subclasses using `useTransparentNavigationBarAppearance` should call this
+    /// from `scrollViewDidScroll` when the scroll position crosses their header threshold;
+    /// UIKit animates the appearance swap. When Liquid Glass is enabled the system handles the
+    /// at-edge/scrolled transition on its own, so we just install its default background once.
+    func setTransparentNavBarScrolled(_ scrolled: Bool) {
+        isNavBarScrolled = scrolled
+
+        guard !LiquidGlass.isEnabled else {
+            return // It's a no-op since on iOS 26 we already use default transparent bars
+        }
+
+        guard let navigationBar = navigationController?.navigationBar else {
+            // `navigationController` is nil once this view controller has been popped off the stack.
+            // A scroll view can still fire `scrollViewDidScroll` mid-deceleration after the pop, which
+            // funnels here — there's simply no bar left to style, so this is expected, not an error.
+            return
+        }
+        let appearance = UINavigationBarAppearance()
+        appearance.configureWithTransparentBackground()
+        if scrolled {
+            appearance.configureWithOpaqueBackground()
+            appearance.backgroundColor = navBgColor ?? ThemeColor.secondaryUi01()
+        }
+        navigationBar.standardAppearance = appearance
+        navigationBar.scrollEdgeAppearance = appearance
+
+        let allItems = ([navigationItem.leftBarButtonItem, customRightBtn, googleCastBtn].compactMap { $0 }) + extraRightButtons
+        for item in allItems {
+            (item.customView as? FakeNavBarStylable)?.setNavBarScrolled(scrolled, animated: true)
         }
     }
 
