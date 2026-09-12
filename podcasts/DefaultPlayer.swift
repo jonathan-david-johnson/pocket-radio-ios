@@ -37,6 +37,9 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
 
     #if !os(watchOS) && !APPCLIP && !os(tvOS)
     private var radioMetadataObserver: RadioMetadataObserver?
+    /// URLSession retains its delegate until invalidated, so the loader has to be
+    /// torn down explicitly or it keeps pulling the stream after playback ends.
+    private var radioStreamLoader: RadioStreamLoader?
     #endif
 
     private var episodeUuid: String?
@@ -92,10 +95,24 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
         player = AVPlayer(playerItem: playerItem)
 
         #if !os(watchOS) && !APPCLIP && !os(tvOS)
+        // The item being loaded may already have adopted this loader (resume
+        // after a pause) — tearing it down then would kill the live socket.
+        if radioStreamLoader !== RadioStreamLoader.loader(for: playerItem) {
+            radioStreamLoader?.park()
+        }
+        radioStreamLoader = nil
+
         if let radio = episode as? RadioStation {
             let observer = RadioMetadataObserver(stationId: radio.uuid)
             observer.attach(to: playerItem)
             radioMetadataObserver = observer
+            // On the resource-loader path AVFoundation never sees the ICY frames,
+            // so the loader hands them over directly.
+            let loader = RadioStreamLoader.loader(for: playerItem)
+            loader?.onICYMetadata = { [weak observer] raw in
+                observer?.ingest(rawICY: raw)
+            }
+            radioStreamLoader = loader
         } else {
             radioMetadataObserver = nil
         }
@@ -239,6 +256,8 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
         player = nil
         #if !os(watchOS) && !APPCLIP && !os(tvOS)
         radioMetadataObserver = nil
+        radioStreamLoader?.park()
+        radioStreamLoader = nil
         #endif
     }
 
@@ -298,6 +317,19 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
         let playerErrorMessage =  (player.error as? NSError)?.debugDescription ?? ""
         let playerItemErrorMessage = (player.currentItem?.error as? NSError)?.debugDescription ?? ""
         FileLog.shared.addMessage("[DefaultPlayer] Playback did fail with error: \(playerErrorMessage) | \(playerItemErrorMessage)")
+
+        // CoreMediaErrorDomain codes are undocumented; the item's error log carries
+        // the HTTP status, server address and a plain-English comment. Live radio
+        // failures (-12640 and friends) are unreadable without it.
+        if let events = player.currentItem?.errorLog()?.events, !events.isEmpty {
+            for event in events.suffix(3) {
+                FileLog.shared.addMessage("[DefaultPlayer] errorLog: status=\(event.errorStatusCode) domain=\(event.errorDomain) server=\(event.serverAddress ?? "nil") uri=\(event.uri ?? "nil") comment=\(event.errorComment ?? "nil")")
+            }
+        } else {
+            FileLog.shared.addMessage("[DefaultPlayer] errorLog: empty")
+        }
+
+        FileLog.shared.forceFlush()
 
         // Give priority to player item error
         let playerError: Error? = (player.currentItem?.error ?? player.error)

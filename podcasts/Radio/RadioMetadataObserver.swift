@@ -51,6 +51,14 @@ final class RadioMetadataObserver: NSObject, AVPlayerItemMetadataOutputPushDeleg
         }
     }
 
+    /// Fed by `RadioStreamLoader` when we de-interleave ICY ourselves. On the
+    /// HLS and direct-AVURLAsset paths AVFoundation delivers the same frames as
+    /// timed metadata instead, and this is unused.
+    func ingest(rawICY raw: String) {
+        guard let parsed = parseStreamTitle(raw) else { return }
+        emit(title: parsed.title, artist: parsed.artist, album: parsed.album)
+    }
+
     // MARK: - Parsing
     /// Returns nil for ad frames (empty StreamTitle or adw_ad='true' present).
     /// Splits on the first " - " when present, else on the KCRW-style
