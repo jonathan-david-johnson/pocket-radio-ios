@@ -111,6 +111,17 @@ final class RadioPlaybackControlsTests: XCTestCase {
         XCTAssertFalse(commandCenter.stopCommand.isEnabled)
     }
 
+    func testRegisteredRadioShimReceivesNeutralEffects() {
+        let configured = PlaybackEffects()
+        configured.playbackSpeed = 1.1
+        configured.volumeBoost = true
+        let shim = makeShimEpisodeForRegisteredRadio()
+        let effective = PlaybackEffects.forPlayback(isRadio: manager.isLiveStream(shim), configuredEffects: configured)
+        XCTAssertEqual(effective.playbackSpeed, 1)
+        XCTAssertFalse(effective.effectsEnabled())
+        XCTAssertEqual(configured.playbackSpeed, 1.1)
+    }
+
     // MARK: - shouldUseMuteControls (M7.2)
 
     func testShouldUseMuteControlsTrueForLiveRadioWithoutPlayer() {
