@@ -280,17 +280,19 @@ class AnalyticsHelper {
     }
 
     #if !os(watchOS) && !APPCLIP && !os(tvOS)
-        class func tabSelected(tab: MainTabBarController.Tab) {
+        class func tabSelected(tab: TabDestination) {
             switch tab {
             case .podcasts:
                 logEvent("podcast_tab_opened", parameters: nil)
-            case .filter:
+            case .playlists:
                 logEvent("filter_tab_opened", parameters: nil)
             case .profile:
                 logEvent("profile_tab_opened", parameters: nil)
+            case .playlist(let uuid):
+                logEvent("playlist_tab_opened", parameters: ["playlistUuid": uuid])
             case .discover: break // we don't log this case, since it's handled in did load
             case .streams: break
-            case .upNext: break // not a tab in this fork; Up Next lives inside the filter tab
+            case .upNext: break
             }
         }
     #endif

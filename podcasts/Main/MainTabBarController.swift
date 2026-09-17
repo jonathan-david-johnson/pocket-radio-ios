@@ -9,28 +9,49 @@ import SwiftUI
 
 class MainTabBarController: UITabBarController, NavigationProtocol {
 
-    // `upNext` is not in `pcTabs` — this fork hosts Up Next inside the filter tab
-    // via `PlaylistsHostViewController`. The case exists so upstream's Up Next tab
-    // item and badge code keeps compiling; `firstIndex(of: .upNext)` is always nil.
-    enum Tab: Int { case podcasts, filter, discover, profile, streams, upNext }
-
-    var pcTabs = [Tab]()
+    /// The destinations currently rendered in the bar, in bar order:
+    /// `viewControllers[i]` roots `renderedDestinations[i]`.
+    ///
+    /// Built from the persisted `TabLayout` in `buildTabs()`. Replaces the
+    /// hard-coded `pcTabs` array — see `docs/ios/architecture/configurable-tab-bar.md`.
+    private(set) var renderedDestinations: [TabDestination] = []
 
     let playPauseCommand = UIKeyCommand(title: L10n.keycommandPlayPause, action: #selector(handlePlayPauseKey), input: " ", modifierFlags: [])
 
+    /// The ⌘1–⌘N tab shortcuts currently installed. Held so a rebuild can
+    /// retire them: they are positional over `renderedDestinations`, so a stale
+    /// set would carry the old titles and point ⌘N at the wrong destination.
+    var tabKeyCommands: [UIKeyCommand] = []
+
     lazy var endOfYear = EndOfYear()
 
-    /// Styles its badge as a plain red dot on the item itself, since Liquid Glass ignores the tab bar
-    /// appearance that does it for the older tab bar.
+    /// Long-lived because it carries the End of Year badge and the gravatar
+    /// avatar, both updated from outside the tab build.
+    ///
+    /// Its badge is styled as a plain red dot on the item itself, since Liquid
+    /// Glass ignores the tab bar appearance that does it for the older tab bar.
     private lazy var profileTabBarItem: UITabBarItem = {
-        let item = UITabBarItem(title: L10n.profile, image: UIImage(named: "profile_tab"), tag: pcTabs.firstIndex(of: .profile) ?? -1)
+        let item = UITabBarItem(title: TabDestination.profile.title(), image: TabDestination.profile.icon(), tag: 0)
         item.badgeColor = .clear
         item.setBadgeTextAttributes([.foregroundColor: UIColor.systemRed], for: .normal)
         item.setBadgeTextAttributes([.foregroundColor: UIColor.systemRed], for: .selected)
         return item
     }()
 
-    private lazy var upNextTabBarItem = UITabBarItem(title: L10n.upNext, image: UIImage(named: "upnext_tab"), tag: pcTabs.firstIndex(of: .upNext) ?? -1)
+    /// Long-lived so it can carry the End of Year badge when Profile is not
+    /// promoted and therefore lives inside Overflow.
+    private lazy var overflowTabBarItem = UITabBarItem(title: TabOverflow.title, image: TabOverflow.icon(), tag: 0)
+
+    /// The Overflow tab's navigation controller, or `nil` when the layout needs
+    /// no Overflow.
+    private(set) var overflowNavigationController: UINavigationController?
+
+    /// Overflow is always the last tab, so its index is simply the number of
+    /// promoted destinations. Derived rather than stored so it cannot drift out
+    /// of step with `viewControllers`.
+    private var overflowIndex: Int? {
+        overflowNavigationController == nil ? nil : renderedDestinations.count
+    }
 
     /// The last Up Next count rendered into the tab, used to pulse the tab only
     /// when the queue actually changes (not on every refresh notification).
@@ -117,64 +138,17 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
 
         fixTarBarTraitCollectionOnIpadForiOS18()
 
-        pcTabs = [.podcasts, .filter, .discover, .streams, .profile]
+        // Ordering matters and is asserted here rather than left to the reader:
+        // M5 leaves the stored *index* correct for the post-M5 order, which is
+        // the order M12 maps through on its way to a destination id.
+        TabSelectionMigration.migrateM5IfNeeded()
+        TabSelectionMigration.migrateM12IfNeeded()
 
-        var vcsInTab = [UIViewController]()
-
-        let podcastsController = PodcastListViewController()
-        podcastsController.tabBarItem = UITabBarItem(title: L10n.podcastsPlural, image: UIImage(named: "podcasts_tab"), tag: pcTabs.firstIndex(of: .podcasts)!)
-
-        let filtersViewController = PlaylistsHostViewController()
-        filtersViewController.tabBarItem = UITabBarItem(title: L10n.playlists, image: UIImage(named: "playlists_tab"), tag: pcTabs.firstIndex(of: .filter)!)
-
-        let discoverViewController = DiscoverCollectionViewController(coordinator: DiscoverCoordinator())
-
-        discoverViewController.tabBarItem = UITabBarItem(title: L10n.discover, image: UIImage(named: "discover_tab"), tag: pcTabs.firstIndex(of: .discover)!)
-
-        let profileViewController = ProfileViewController()
-        profileViewController.tabBarItem = profileTabBarItem
-
-        let streamsViewController = StreamsHostViewController()
-        streamsViewController.tabBarItem = UITabBarItem(title: "Streams", image: UIImage(systemName: "radio"), tag: pcTabs.firstIndex(of: .streams)!)
-
-        vcsInTab = [podcastsController, filtersViewController, discoverViewController, streamsViewController, profileViewController]
+        buildTabs()
 
         displayEndOfYearBadgeIfNeeded()
 
-        viewControllers = vcsInTab.map { SJUIUtils.navController(for: $0) }
-
-        // M5 migration: old layout had .upNext at raw index 3 and .streams/.profile at 4/5.
-        // New layout: [.podcasts(0), .filter(1), .discover(2), .streams(3), .profile(4)].
-        // Remap stored index if migration has not yet run.
-        if !UserDefaults.standard.bool(forKey: Constants.UserDefaults.lastTabOpenedMigratedM5),
-           UserDefaults.standard.object(forKey: Constants.UserDefaults.lastTabOpened) != nil {
-            let stored = UserDefaults.standard.integer(forKey: Constants.UserDefaults.lastTabOpened)
-            let remapped: Int
-            switch stored {
-            case 3: // old .upNext → filter
-                remapped = pcTabs.firstIndex(of: .filter) ?? stored
-            case 4: // old .streams → new .streams
-                remapped = pcTabs.firstIndex(of: .streams) ?? stored
-            case 5: // old .profile → new .profile
-                remapped = pcTabs.firstIndex(of: .profile) ?? stored
-            default:
-                remapped = min(stored, pcTabs.count - 1)
-            }
-            UserDefaults.standard.set(remapped, forKey: Constants.UserDefaults.lastTabOpened)
-            UserDefaults.standard.set(true, forKey: Constants.UserDefaults.lastTabOpenedMigratedM5)
-        }
-
-        let rawTabIndex = UserDefaults.standard.integer(forKey: Constants.UserDefaults.lastTabOpened)
-        let clampedTabIndex = max(0, min(rawTabIndex, pcTabs.count - 1))
-        if clampedTabIndex != rawTabIndex {
-            UserDefaults.standard.set(clampedTabIndex, forKey: Constants.UserDefaults.lastTabOpened)
-        }
-        selectedIndex = clampedTabIndex
-
-        // Track the initial tab opened event
-        if let tab = pcTabs[safe: selectedIndex] {
-            trackTabOpened(tab, isInitial: true)
-        }
+        restoreSelectedTab()
 
         NavigationManager.sharedManager.mainViewControllerDidLoad(controller: self)
         setupMiniPlayer()
@@ -187,6 +161,7 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
         NotificationCenter.default.addObserver(self, selector: #selector(handleFollowSystemThemeTurnedOn), name: Constants.Notifications.followSystemThemeTurnedOn, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(willEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(profileSeen), name: Constants.Notifications.profileSeen, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(playlistsDidChange), name: Constants.Notifications.playlistChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(refreshProfileTabAvatar), name: .userLoginDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(refreshProfileTabAvatarForcingReload), name: Constants.Notifications.avatarNeedsRefreshing, object: nil)
         refreshProfileTabAvatar()
@@ -209,6 +184,304 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
         }
     }
 
+    // MARK: - Tab layout
+
+    /// Builds `viewControllers` from the persisted `TabLayout`.
+    ///
+    /// The default layout renders four content tabs plus More.
+    private func buildTabs() {
+        buildTabs(from: TabLayoutStore.shared.load(), animated: false)
+    }
+
+    /// Builds `viewControllers` from `layout`.
+    ///
+    /// Split out from `buildTabs()` so a controlled rebuild renders the layout
+    /// it was handed rather than re-reading the store — the store has already
+    /// been written by then, but keeping the two independent means the rebuild
+    /// cannot silently render something other than what it was asked to.
+    private func buildTabs(from layout: TabLayout, animated: Bool) {
+        let plan = layout.renderPlan(capacity: TabLayout.capacity(for: traitCollection),
+                                     isAvailable: { $0.isAvailable })
+
+        renderedDestinations = plan.visibleDestinations
+
+        var controllers: [UIViewController] = renderedDestinations.map { destination in
+            let root = destination.makeRootViewController()
+            root.tabBarItem = tabBarItem(for: destination)
+
+            let navController = SJUIUtils.navController(for: root)
+            navController.tabDestinationID = destination.id
+
+            return navController
+        }
+
+        // Overflow is derived, always last, and absent when it would be empty.
+        // Nothing listed inside it is constructed here: an unpromoted
+        // destination is built when a row is tapped or a deep link resolves
+        // into it, so it costs nothing at launch.
+        let overflowDestinations = plan.overflowDestinations
+        if overflowDestinations.isEmpty {
+            overflowNavigationController = nil
+        } else {
+            let overflow = OverflowViewController(destinations: overflowDestinations)
+            overflow.tabBarItem = overflowTabBarItem
+
+            let navController = SJUIUtils.navController(for: overflow)
+            navController.tabDestinationID = TabOverflow.id
+
+            overflowNavigationController = navController
+            controllers.append(navController)
+        }
+
+        // The mini player is a child of this controller so it can serve as the
+        // bottom accessory under Liquid Glass. That puts it in `viewControllers`
+        // after the tabs, with no tab item of its own — and `setViewControllers`
+        // would drop it on a rebuild. Re-attach whatever was not a tab.
+        let nonTabChildren = children.filter { $0.tabDestinationID == nil }
+
+        setViewControllers(controllers, animated: animated)
+
+        for child in nonTabChildren where child.parent == nil {
+            addChild(child)
+            child.didMove(toParent: self)
+        }
+    }
+
+    /// The navigation stacks that root tabs, in bar order.
+    ///
+    /// Not the same as `viewControllers`: the mini player is a child of this
+    /// controller so it can be the bottom accessory under Liquid Glass, which
+    /// puts it in `viewControllers` without giving it a tab.
+    var tabViewControllers: [UIViewController] {
+        (viewControllers ?? []).filter { $0.tabDestinationID != nil }
+    }
+
+    private func tabBarItem(for destination: TabDestination) -> UITabBarItem {
+        // The profile item outlives a rebuild: it carries the End of Year badge
+        // and the gravatar avatar.
+        if destination == .profile {
+            return profileTabBarItem
+        }
+
+        // `tag` no longer carries meaning; read `tabDestinationID` instead.
+        return UITabBarItem(title: destination.title(), image: destination.icon(), tag: 0)
+    }
+
+    /// The id naming the tab that is selected right now: a `destinationID`, or
+    /// Overflow's reserved id. This is what gets persisted to `lastTabOpenedID`
+    /// and what a rebuild restores against.
+    private var selectedTabID: String? {
+        if selectedIndex == overflowIndex {
+            return TabOverflow.id
+        }
+
+        return renderedDestinations[safe: selectedIndex]?.id
+    }
+
+    /// Resolves a selection id — persisted or live — to an index in the bar as
+    /// it stands, or `nil` when nothing in the current bar answers to it.
+    ///
+    /// Overflow is derived, so its reserved id names a *position* rather than a
+    /// destination, and names nothing at all once the layout stops needing
+    /// Overflow.
+    private func tabIndex(forSelectionID id: String?) -> Int? {
+        guard let id else { return nil }
+
+        if id == TabOverflow.id {
+            return overflowIndex
+        }
+
+        return renderedDestinations.firstIndex { $0.id == id }
+    }
+
+    /// Restores the selected tab by `destinationID`, never by index.
+    private func restoreSelectedTab() {
+        let storedID = UserDefaults.standard.string(forKey: Constants.UserDefaults.lastTabOpenedID)
+        let index = tabIndex(forSelectionID: storedID) ?? 0
+
+        selectedIndex = index
+
+        // Track the initial tab opened event
+        if index == overflowIndex {
+            trackOverflowOpened(isInitial: true)
+        } else if let destination = renderedDestinations[safe: index] {
+            trackTabOpened(destination, isInitial: true)
+        }
+    }
+
+    // MARK: - Controlled rebuild
+
+    /// Whether a layout arriving from sync may be applied to the live bar right
+    /// now, as opposed to being persisted and left to render at next launch.
+    ///
+    /// M12.3 §3, and the rule the whole design rests on: a rebuild replaces
+    /// every `viewControllers` entry, so anything the user is part-way through
+    /// would be thrown away. The settings screen is allowed to do that because
+    /// the user asked for it in that moment. A device they are not holding is
+    /// not.
+    ///
+    /// Two conditions, both read at apply time rather than at fetch time:
+    ///
+    /// 1. Nothing is presented modally — not from here, and not from any tab's
+    ///    navigation controller. The full screen player and Up Next are
+    ///    presented from this controller; a settings sheet is presented from a
+    ///    tab's stack.
+    /// 2. Every tab's navigation stack is at its root, so there is nothing
+    ///    pushed to lose.
+    ///
+    /// The mini player's own open state is checked alongside the first
+    /// condition: it tracks the full screen player separately, so a dismissal
+    /// still in flight leaves `presentedViewController` nil while the mini
+    /// player still believes the player is open.
+    var isSafeToRebuild: Bool {
+        guard presentedViewController == nil else { return false }
+
+        for controller in viewControllers ?? [] {
+            guard controller.presentedViewController == nil else { return false }
+
+            if let navController = controller as? UINavigationController {
+                guard navController.viewControllers.count <= 1 else { return false }
+            }
+        }
+
+        if let miniPlayer = NavigationManager.sharedManager.miniPlayer,
+           miniPlayer.playerOpenState != .closed {
+            return false
+        }
+
+        return true
+    }
+
+
+    /// Tears down `viewControllers` and reconstructs the bar from `layout`,
+    /// keeping the user where they were.
+    ///
+    /// **This is not the entry point.** Call
+    /// `TabLayoutApplier.apply(_:source:)`, which persists the layout, stamps
+    /// `updatedAt` and emits the analytics event before getting here. There are
+    /// exactly two legal reasons to rebuild — the user saving the tab bar
+    /// settings screen, and the safe sync-pull path in M12.3 — and
+    /// `TabLayoutChangeSource` makes a third caller declare itself.
+    ///
+    /// Never call this from a background notification. Slot *structure* is
+    /// frozen mid-session by design (see the design doc §6): changing the slot
+    /// count moves `selectedIndex` under whatever is on screen. The main-thread
+    /// guard below catches the most likely way of getting that wrong, a sync
+    /// notification delivered off the main queue, but it cannot catch a
+    /// main-queue notification — that one is on the reader.
+    func rebuildTabs(from layout: TabLayout, animated: Bool) {
+        guard Thread.isMainThread else {
+            assertionFailure("rebuildTabs must run on the main thread — go through TabLayoutApplier")
+            DispatchQueue.main.async { [weak self] in
+                self?.rebuildTabs(from: layout, animated: animated)
+            }
+            return
+        }
+
+        // Captured before teardown: after it, `renderedDestinations` describes
+        // the new bar and the old selection is unrecoverable.
+        let previousSelectionID = selectedTabID
+
+        dismissToRootForRebuild()
+
+        buildTabs(from: layout, animated: animated)
+
+        // Selection is restored by identity. If the destination the user was on
+        // no longer has a slot, fall back to the first one.
+        selectedIndex = tabIndex(forSelectionID: previousSelectionID) ?? 0
+
+        // Written *after* the rebuild, never before: a layout that drops the
+        // selected destination has to persist the fallback that is actually on
+        // screen, not the ghost it replaced.
+        if let selectedTabID {
+            UserDefaults.standard.set(selectedTabID, forKey: Constants.UserDefaults.lastTabOpenedID)
+        }
+
+        // Fix-ups for the things that outlive a rebuild and therefore have to be
+        // re-pointed at the new bar.
+        displayEndOfYearBadgeIfNeeded()
+        refreshProfileTabAvatar()
+        refreshTabKeyboardShortcuts()
+        fixTarBarTraitCollectionOnIpadForiOS18()
+        reassertMiniPlayerPosition()
+    }
+
+    /// Brings down anything presented and empties the stacks we are about to
+    /// discard.
+    ///
+    /// The full screen player and Up Next are presented from *this* controller,
+    /// so they sit above the tabs being replaced. Non-animated and synchronous
+    /// on purpose: an in-flight dismissal animation over a bar that is changing
+    /// shape is how you end up with an orphaned modal.
+    private func dismissToRootForRebuild() {
+        let miniPlayer = NavigationManager.sharedManager.miniPlayer
+
+        if presentedViewController != nil {
+            // Dismissing from here takes the whole presented chain with it.
+            dismiss(animated: false)
+        }
+
+        // The mini player tracks the full screen player itself, so tell it
+        // rather than leaving `playerOpenState` stuck at `.open` pointing at a
+        // container that is on its way out. Same order as
+        // `closeFullScreenPlayer`'s completion block.
+        if let miniPlayer, miniPlayer.playerOpenState != .closed {
+            miniPlayer.playerOpenState = .closed
+            miniPlayer.finishedWithFullScreenPlayer()
+        }
+
+        // Pop what is about to be thrown away, so pushed controllers see
+        // `viewWillDisappear` in the normal order instead of during dealloc.
+        viewControllers?
+            .compactMap { $0 as? UINavigationController }
+            .forEach { $0.popToRootViewController(animated: false) }
+    }
+
+    /// Re-asserts the mini player's place in the view hierarchy after a
+    /// rebuild.
+    ///
+    /// The mini player is **not** part of `viewControllers`: `setupMiniPlayer()`
+    /// runs once, from `viewDidLoad`, and either inserts its view directly into
+    /// this controller's view below `tabBar` or — under Liquid Glass — installs
+    /// it as the tab bar's bottom accessory. Replacing `viewControllers` leaves
+    /// it and its constraints alone, and playback lives in the
+    /// `PlaybackManager` singleton regardless. This only guards against the tab
+    /// bar controller re-inserting a fresh content view above it.
+    private func reassertMiniPlayerPosition() {
+        guard !LiquidGlass.isEnabled else { return }
+
+        guard let miniPlayerView = NavigationManager.sharedManager.miniPlayer?.view,
+              miniPlayerView.superview === view,
+              let miniPlayerPosition = view.subviews.firstIndex(of: miniPlayerView),
+              let tabBarPosition = view.subviews.firstIndex(of: tabBar),
+              miniPlayerPosition > tabBarPosition else {
+            return
+        }
+
+        // Same superview, so the constraints set up in `setupMiniPlayer()`
+        // survive the move.
+        view.insertSubview(miniPlayerView, belowSubview: tabBar)
+    }
+
+    /// Routes to a destination the way the rest of the app expects to reach it.
+    /// Used by the positional ⌘1–⌘N keyboard shortcuts.
+    func navigate(to destination: TabDestination) {
+        switch destination {
+        case .podcasts:
+            navigateToPodcastList(true)
+        case .playlists:
+            navigateToFilterTab()
+        case .discover:
+            navigateToDiscover(true)
+        case .profile:
+            navigateToProfile(animated: true)
+        case .upNext:
+            navigateToUpNext(true)
+        case .streams, .playlist:
+            host(for: destination)
+        }
+    }
+
     private var cancellables = Set<AnyCancellable>()
 
     private var systemAppearanceObservation: Any?
@@ -220,8 +493,11 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
         fireSystemThemeMayHaveChanged()
 
         // if this key was never set lets default to Discovery or Podcast depending of podcasts followed
-        if UserDefaults.standard.object(forKey: Constants.UserDefaults.lastTabOpened) == nil {
-            selectedIndex = DataManager.sharedManager.podcastCount() > 0 ? Tab.podcasts.rawValue: Tab.discover.rawValue
+        if UserDefaults.standard.object(forKey: Constants.UserDefaults.lastTabOpenedID) == nil {
+            let destination: TabDestination = DataManager.sharedManager.podcastCount() > 0 ? .podcasts : .discover
+            if let index = renderedDestinations.firstIndex(of: destination) {
+                selectedIndex = index
+            }
         }
 
         updateDatabaseIndexes()
@@ -355,23 +631,41 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     // MARK: - UITabBarDelegate
 
     override func tabBar(_ tabBar: UITabBar, didSelect item: UITabBarItem) {
-        let tabIndex = item.tag
+        // `item.tag` used to carry the tab index; it means nothing once slots can
+        // be reordered, so read the position out of the bar and the identity out
+        // of `renderedDestinations`.
+        let position = tabBar.items?.firstIndex(of: item) ?? viewControllers?.firstIndex { $0.tabBarItem === item }
+        guard let tabIndex = position else { return }
+
+        // Overflow has no `TabDestination`, so it is resolved by position before
+        // the `renderedDestinations` lookup — otherwise its tap would fall
+        // through the guard below and go untracked and unpersisted.
+        if tabIndex == overflowIndex {
+            if tabIndex != selectedIndex {
+                trackOverflowOpened()
+            }
+
+            UserDefaults.standard.set(TabOverflow.id, forKey: Constants.UserDefaults.lastTabOpenedID)
+            return
+        }
+
+        guard let destination = renderedDestinations[safe: tabIndex] else { return }
+
         if tabIndex == selectedIndex, let navController = selectedViewController as? UINavigationController, navController.visibleViewController == navController.viewControllers.first {
             // the user has tapped on a tab they are already at the root of, so trigger an action so we can handle this
-            NotificationCenter.postOnMainThread(notification: Constants.Notifications.tappedOnSelectedTab, object: tabIndex)
+            NotificationCenter.postOnMainThread(notification: Constants.Notifications.tappedOnSelectedTab, object: destination.id)
         }
 
         if tabIndex != selectedIndex {
-            let tab = pcTabs[tabIndex]
-            trackTabOpened(tab)
-            AnalyticsHelper.tabSelected(tab: tab)
+            trackTabOpened(destination)
+            AnalyticsHelper.tabSelected(tab: destination)
         }
 
         if item === profileTabBarItem, FeatureFlag.whatsNewFeed.enabled {
             WhatsNewManager.shared.markFeedAsSeen()
         }
 
-        UserDefaults.standard.set(tabIndex, forKey: Constants.UserDefaults.lastTabOpened)
+        UserDefaults.standard.set(destination.id, forKey: Constants.UserDefaults.lastTabOpenedID)
     }
 
     // MARK: - NavigationProtocol
@@ -384,23 +678,20 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     }
 
     func navigateToPodcastList(_ animated: Bool) {
-        if !switchToTab(.podcasts) { return }
+        guard canSwitchTabs else { return }
 
-        if let navController = selectedViewController as? UINavigationController {
-            navController.popToRootViewController(animated: true)
-        }
+        popToDestinationRoot(.podcasts, in: host(for: .podcasts), animated: true)
     }
 
     /// Switch to the Streams tab and select the Favorites segment of
     /// `StreamsHostViewController`. Used by the Pocket Radio widget's
     /// `pktc://favorites` deep link.
     func navigateToStreamsFavorites(animated: Bool) {
-        guard switchToTab(.streams) else { return }
-        if let navController = selectedViewController as? UINavigationController {
-            navController.popToRootViewController(animated: animated)
-            if let host = navController.viewControllers.first as? StreamsHostViewController {
-                host.selectFavorites()
-            }
+        guard canSwitchTabs else { return }
+
+        let navController = host(for: .streams)
+        if let streamsHost = popToDestinationRoot(.streams, in: navController, animated: animated) as? StreamsHostViewController {
+            streamsHost.selectFavorites()
         }
     }
 
@@ -408,9 +699,11 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     /// for the given station onto its nav stack. Used by the Pocket Radio
     /// widget's `pktc://station/<id>` deep link.
     func navigateToStreamsStation(_ station: RadioStation, animated: Bool) {
-        guard switchToTab(.streams) else { return }
-        guard let navController = selectedViewController as? UINavigationController else { return }
-        navController.popToRootViewController(animated: false)
+        guard canSwitchTabs else { return }
+
+        let navController = host(for: .streams)
+        popToDestinationRoot(.streams, in: navController)
+
         let detail = StationDetailViewController(station: station)
         navController.pushViewController(detail, animated: animated)
     }
@@ -427,11 +720,12 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     }
 
     func navigateToSuggestedFolders() {
-        guard let navController = selectedViewController as? UINavigationController else { return }
+        // Resolved through the Podcasts tab rather than whatever happens to be
+        // selected: the suggested-folders deep link only means anything on the
+        // podcast list, and popping an unrelated tab to root was already wrong.
+        let navController = host(for: .podcasts)
 
-        navController.popToRootViewController(animated: false)
-
-        guard let podcastListController = navController.topViewController as? PodcastListViewController else {
+        guard let podcastListController = popToDestinationRoot(.podcasts, in: navController) as? PodcastListViewController else {
             return
         }
 
@@ -505,78 +799,56 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     }
 
     func navigateToDiscover(_ animated: Bool) {
-        switchToTab(.discover)
+        host(for: .discover)
     }
 
     func navigateToDiscover(category: String, animated: Bool) {
-        switchToTab(.discover)
-        if let index = pcTabs.firstIndex(of: .discover),
-           let navController = viewControllers?[safe: index] as? UINavigationController {
-            navController.popToRootViewController(animated: false)
-            if let discoverDelegate = navController.topViewController as? DiscoverDelegate {
-                discoverDelegate.navigateTo(category: category)
-            }
+        // Cast the resolved root, which is the tab's own root when Discover is
+        // promoted and the controller just pushed onto Overflow when it is not.
+        if let discoverDelegate = popToDestinationRoot(.discover, in: host(for: .discover)) as? DiscoverDelegate {
+            discoverDelegate.navigateTo(category: category)
         }
     }
 
     func navigateToDiscover(listID: String, animated: Bool) {
-        switchToTab(.discover)
-        if let index = pcTabs.firstIndex(of: .discover),
-           let navController = viewControllers?[safe: index] as? UINavigationController {
-            navController.popToRootViewController(animated: false)
-            if let discoverDelegate = navController.topViewController as? DiscoverDelegate {
-                discoverDelegate.navigateTo(listID: listID)
-            }
+        if let discoverDelegate = popToDestinationRoot(.discover, in: host(for: .discover)) as? DiscoverDelegate {
+            discoverDelegate.navigateTo(listID: listID)
         }
     }
 
     func navigateToUpNext(_ animated: Bool) {
-        switchToTab(.filter)
-        if let index = pcTabs.firstIndex(of: .filter),
-           let navController = viewControllers?[safe: index] as? UINavigationController,
-           let host = navController.viewControllers.first as? PlaylistsHostViewController {
-            navController.popToRootViewController(animated: false)
-            host.selectUpNext()
-        }
+        popToDestinationRoot(.upNext, in: host(for: .upNext), animated: animated)
     }
 
     func navigateToProfile(row: ProfileViewController.TableRow? = nil, animated: Bool) {
-        switchToTab(.profile)
-        guard let navController = selectedViewController as? UINavigationController else {
-            return
-        }
-        navController.popToRootViewController(animated: animated)
-        guard let profileViewController = navController.topViewController as? ProfileViewController,
-            let row else {
+        guard let profileViewController = popToDestinationRoot(.profile, in: host(for: .profile), animated: animated) as? ProfileViewController,
+              let row else {
             return
         }
         profileViewController.navigateToRow(row)
     }
 
     func navigateToFilter(_ filter: EpisodeFilter?, animated: Bool) {
-        guard switchToTab(.filter) else { return }
+        guard canSwitchTabs else { return }
 
-        guard let index = pcTabs.firstIndex(of: .filter),
-              let navController = viewControllers?[safe: index] as? UINavigationController,
-              let host = navController.viewControllers.first as? PlaylistsHostViewController else {
+        guard let playlistsHost = popToDestinationRoot(.playlists, in: host(for: .playlists)) as? PlaylistsHostViewController else {
             return
         }
-        navController.popToRootViewController(animated: false)
-        host.selectPlaylist()
+        playlistsHost.selectPlaylist()
 
         guard let filter,
-              let filtersViewController = host.playlistsViewController else {
+              let filtersViewController = playlistsHost.playlistsViewController else {
             return
         }
         filtersViewController.showFilter(filter)
     }
 
     func navigateToEditFilter(_ filter: EpisodeFilter) {
-        switchToTab(.filter)
+        host(for: .playlists)
     }
 
     func navigateToAddFilter() {
-        switchToTab(.filter)
+        host(for: .playlists)
     }
 
     func presentManualPlaylistsChooser(for episode: Episode, rootViewController: UIViewController?, source: String) {
@@ -595,30 +867,25 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
 
     func navigateToAddCustom(_ url: URL) {
         appDelegate()?.miniPlayer()?.closeUpNextAndFullPlayer(completion: {
-            self.switchToTab(.profile)
+            let navController = self.host(for: .profile)
 
-            if let navController = self.selectedViewController as? UINavigationController {
-                if let existingUploadedViewController = (navController.viewControllers.last as? UploadedViewController) {
-                    existingUploadedViewController.closeAllChildrenViewControllers()
-                }
-                navController.popToRootViewController(animated: false)
-
-                let uploadedViewController = UploadedViewController()
-                uploadedViewController.fileURL = url
-                navController.pushViewController(uploadedViewController, animated: false)
+            if let existingUploadedViewController = (navController.viewControllers.last as? UploadedViewController) {
+                existingUploadedViewController.closeAllChildrenViewControllers()
             }
+            navController.popToRootViewController(animated: false)
+
+            let uploadedViewController = UploadedViewController()
+            uploadedViewController.fileURL = url
+            navController.pushViewController(uploadedViewController, animated: false)
         })
     }
 
     func navigateToFiles() {
-        switchToTab(.profile)
+        let navController = host(for: .profile)
+        navController.popToRootViewController(animated: false)
 
-        if let navController = selectedViewController as? UINavigationController {
-            navController.popToRootViewController(animated: false)
-
-            let filesController = UploadedViewController()
-            navController.pushViewController(filesController, animated: true)
-        }
+        let filesController = UploadedViewController()
+        navController.pushViewController(filesController, animated: true)
     }
 
     func showSubscriptionCancelledAcknowledge() {
@@ -640,14 +907,9 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     }
 
     func showPromotionPage(promoCode: String?) {
-        switchToTab(.profile)
-        if let navController = selectedViewController as? UINavigationController {
-            navController.popToRootViewController(animated: false)
-
-            if let profileVC = navController.topViewController as? ProfileViewController {
-                profileVC.presentedViewController?.dismiss(animated: true, completion: nil)
-                profileVC.promoCode = promoCode
-            }
+        if let profileVC = popToDestinationRoot(.profile, in: host(for: .profile)) as? ProfileViewController {
+            profileVC.presentedViewController?.dismiss(animated: true, completion: nil)
+            profileVC.promoCode = promoCode
         }
     }
 
@@ -687,12 +949,11 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     }
 
     func navigateToFilterTab() {
-        switchToTab(.filter)
+        host(for: .playlists)
     }
 
     func showSettings(row: SettingsViewController.TableRow?) {
-        switchToTab(.profile)
-        guard let navController = selectedViewController as? UINavigationController else { return }
+        let navController = host(for: .profile)
 
         if navController.presentedViewController != nil {
             navController.dismiss(animated: false)
@@ -708,35 +969,25 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     }
 
     func showSettingsAppearance(showThemeSelection: Bool = false) {
-        switchToTab(.profile)
-        if let navController = selectedViewController as? UINavigationController {
-            navController.popToRootViewController(animated: false)
+        let navController = host(for: .profile)
+        navController.popToRootViewController(animated: false)
 
-            navController.pushViewController(SettingsViewController(), animated: false)
-            let appearanceViewController = AppearanceViewController()
-            navController.pushViewController(appearanceViewController, animated: !showThemeSelection)
-            if showThemeSelection {
-                appearanceViewController.presentThemePicker(selectedTheme: Theme.preferredLightTheme()) { theme in
-                    Theme.setPreferredLightTheme(theme, systemIsDark: Theme.systemIsDark)
-                }
+        navController.pushViewController(SettingsViewController(), animated: false)
+        let appearanceViewController = AppearanceViewController()
+        navController.pushViewController(appearanceViewController, animated: !showThemeSelection)
+        if showThemeSelection {
+            appearanceViewController.presentThemePicker(selectedTheme: Theme.preferredLightTheme()) { theme in
+                Theme.setPreferredLightTheme(theme, systemIsDark: Theme.systemIsDark)
             }
         }
     }
 
     func showProfilePage() {
-        switchToTab(.profile)
-
-        if let navController = selectedViewController as? UINavigationController {
-            navController.popToRootViewController(animated: false)
-        }
+        popToDestinationRoot(.profile, in: host(for: .profile))
     }
 
     func showRedeemGuestPass(url: URL) {
-        switchToTab(.profile)
-
-        guard let navController = selectedViewController as? UINavigationController else {
-            return
-        }
+        let navController = host(for: .profile)
 
         navController.popToRootViewController(animated: false)
         navController.dismiss(animated: true)
@@ -752,12 +1003,10 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
             dismissPresentedViewController()
         }
 
-        switchToTab(.profile)
-        if let navController = selectedViewController as? UINavigationController {
-            navController.popToRootViewController(animated: false)
-            navController.pushViewController(SettingsViewController(), animated: false)
-            navController.pushViewController(HeadphoneSettingsViewController(), animated: true)
-        }
+        let navController = host(for: .profile)
+        navController.popToRootViewController(animated: false)
+        navController.pushViewController(SettingsViewController(), animated: false)
+        navController.pushViewController(HeadphoneSettingsViewController(), animated: true)
     }
 
     func showGeneralSettings(row: GeneralSettingsViewController.TableRow?) {
@@ -768,19 +1017,16 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
             dismissPresentedViewController()
         }
 
-        switchToTab(.profile)
-        if let navController = selectedViewController as? UINavigationController {
-            navController.popToRootViewController(animated: false)
-            navController.pushViewController(SettingsViewController(), animated: false)
-            let generalSettingsController = GeneralSettingsViewController()
-            generalSettingsController.scrollToRow = row
-            navController.pushViewController(generalSettingsController, animated: true)
-        }
+        let navController = host(for: .profile)
+        navController.popToRootViewController(animated: false)
+        navController.pushViewController(SettingsViewController(), animated: false)
+        let generalSettingsController = GeneralSettingsViewController()
+        generalSettingsController.scrollToRow = row
+        navController.pushViewController(generalSettingsController, animated: true)
     }
 
     func showSignUp() {
-        switchToTab(.podcasts)
-        selectedViewController?.dismiss(animated: false)
+        host(for: .podcasts).dismiss(animated: false)
         if let controller = view.window?.rootViewController {
             showSubscriptionRequired(controller, source: .unknown, context: nil, flow: .none)
         }
@@ -799,14 +1045,12 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     }
 
     func showSupporterBundleDetails(bundleUuid: String?) {
-        switchToTab(.profile)
-        if let navController = selectedViewController as? UINavigationController {
-            navController.popToRootViewController(animated: false)
-            let supporterVC = SupporterContributionsViewController()
-            supporterVC.bundleUuidToOpen = bundleUuid
-            navController.pushViewController(AccountViewController(), animated: false)
-            navController.pushViewController(supporterVC, animated: true)
-        }
+        let navController = host(for: .profile)
+        navController.popToRootViewController(animated: false)
+        let supporterVC = SupporterContributionsViewController()
+        supporterVC.bundleUuidToOpen = bundleUuid
+        navController.pushViewController(AccountViewController(), animated: false)
+        navController.pushViewController(supporterVC, animated: true)
     }
 
     func showEndOfYearStories() {
@@ -849,27 +1093,130 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
         return topController
     }
 
+    // MARK: - Navigation resolution
+
+    /// The navigation controller that will display `destination`, having
+    /// selected the tab that owns it.
+    ///
+    /// - **Promoted** → selects that tab and returns its navigation controller,
+    ///   leaving its stack alone. Callers that need the destination's own root
+    ///   on top ask `popToDestinationRoot(_:in:)` for it.
+    /// - **Not promoted** → selects Overflow, pops back to the More list and
+    ///   pushes a *fresh* root for `destination`. Two calls in a row therefore
+    ///   leave exactly one instance on the stack.
+    ///
+    /// Total by construction for every **core** destination: Overflow exists
+    /// whenever the complement is non-empty, so an unpromoted core destination
+    /// always has a home. An *extra* destination that is neither promoted nor
+    /// truncated has no guaranteed tab-layout home.
     @discardableResult
-    private func switchToTab(_ tab: Tab) -> Bool {
-        guard let miniPlayer = NavigationManager.sharedManager.miniPlayer else { return false }
+    func host(for destination: TabDestination) -> UINavigationController {
+        if let index = renderedDestinations.firstIndex(of: destination),
+           let navController = viewControllers?[safe: index] as? UINavigationController {
+            selectTab(at: index)
+            return navController
+        }
+
+        if let overflowIndex, let overflowNav = overflowNavigationController {
+            selectTab(at: overflowIndex)
+
+            // Pop first so repeat deep links cannot stack instances, then build
+            // fresh — an unpromoted destination is never held onto.
+            overflowNav.popToRootViewController(animated: false)
+            overflowNav.pushViewController(destination.makeRootViewController(), animated: false)
+
+            return overflowNav
+        }
+
+        // Unreachable for a core destination. Push onto whatever is selected so
+        // the link still lands somewhere with a working back button, rather
+        // than nowhere at all.
+        FileLog.shared.addMessage("MainTabBarController: no host for \(destination.id), falling back to the selected tab")
+
+        guard let fallback = (selectedViewController as? UINavigationController) ?? (viewControllers?.first as? UINavigationController) else {
+            return SJUIUtils.navController(for: destination.makeRootViewController())
+        }
+
+        fallback.pushViewController(destination.makeRootViewController(), animated: false)
+
+        return fallback
+    }
+
+    /// Selects the tab at `index`.
+    ///
+    /// Preserves the pre-M12.1 `switchToTab` refusal to move the bar while the
+    /// full screen player is animating, and its habit of closing an open player
+    /// on the way.
+    private func selectTab(at index: Int) {
+        guard let miniPlayer = NavigationManager.sharedManager.miniPlayer else { return }
 
         if miniPlayer.playerOpenState == .animating {
-            return false // can't switch tabs while animating
+            return // can't switch tabs while animating
         }
 
         if miniPlayer.playerOpenState == .open {
             miniPlayer.closeFullScreenPlayer()
         }
 
-        selectedIndex = pcTabs.firstIndex(of: tab)!
+        selectedIndex = index
+    }
 
-        return true
+    /// `false` while the full screen player is animating, or before the mini
+    /// player exists. The callers that used to bail on `switchToTab` returning
+    /// `false` bail on this instead.
+    private var canSwitchTabs: Bool {
+        guard let miniPlayer = NavigationManager.sharedManager.miniPlayer else { return false }
+
+        return miniPlayer.playerOpenState != .animating
+    }
+
+    /// Pops `navController` back to `destination`'s own root and returns it.
+    ///
+    /// For a promoted destination that is `popToRootViewController`. In the
+    /// Overflow stack the destination's root sits *above* the More list, so
+    /// popping to the stack root would pop the destination away instead.
+    ///
+    /// Matches on `ownTabDestinationID`: the `tabDestinationID` getter walks up
+    /// to the enclosing navigation controller, so it would match anything
+    /// pushed above the root as well.
+    @discardableResult
+    private func popToDestinationRoot(_ destination: TabDestination, in navController: UINavigationController, animated: Bool = false) -> UIViewController? {
+        guard let root = navController.viewControllers.last(where: { $0.ownTabDestinationID == destination.id }) else {
+            navController.popToRootViewController(animated: animated)
+            return navController.viewControllers.last
+        }
+
+        navController.popToViewController(root, animated: animated)
+
+        return root
     }
 
     // MARK: - End of Year
 
-    /// Whether End of Year has a badge waiting on the Profile tab, which it shares with What's New.
+    /// Whether End of Year has a badge waiting on Profile, which it shares with
+    /// What's New. Stored because the two sources are combined when rendering.
     private var showsEndOfYearBadge = false
+
+    /// The Up Next tab's bar item, when Up Next is promoted into the bar.
+    /// `nil` when it lives in Overflow, which makes the count badge and the
+    /// pulse animation no-ops.
+    private var upNextTabBarItem: UITabBarItem? {
+        guard let index = renderedDestinations.firstIndex(of: .upNext) else { return nil }
+        return viewControllers?[safe: index]?.tabBarItem
+    }
+
+    /// The tab item that carries the End of Year badge: Profile's own item when
+    /// it is promoted, otherwise Overflow's, since that is where Profile lives.
+    ///
+    /// `nil` only if Profile is unpromoted with no Overflow, which cannot
+    /// happen: an unpromoted core destination puts the complement in Overflow.
+    private var endOfYearBadgeItem: UITabBarItem? {
+        if renderedDestinations.contains(.profile) {
+            return profileTabBarItem
+        }
+
+        return overflowNavigationController == nil ? nil : overflowTabBarItem
+    }
 
     @objc private func profileSeen() {
         showsEndOfYearBadge = false
@@ -1145,26 +1492,33 @@ private extension MainTabBarController {
 private extension MainTabBarController {
     /// Tracks when a tab is switched to.
     /// - Parameters:
-    ///   - tab: Which tab we're switching to
+    ///   - destination: Which destination we're switching to
     ///   - isInitial: Whether this is the tab that is being loaded on first launch
-    func trackTabOpened(_ tab: Tab, isInitial: Bool = false) {
+    func trackTabOpened(_ destination: TabDestination, isInitial: Bool = false) {
         let event: AnalyticsEvent
-        switch tab {
+        switch destination {
         case .podcasts:
             event = .podcastsTabOpened
-        case .filter:
+        case .playlists:
             event = .filtersTabOpened
         case .discover:
             event = .discoverTabOpened
         case .profile:
             event = .profileTabOpened
-        case .streams:
+        case .upNext:
+            event = .upNextTabOpened
+        case .streams, .playlist:
             return
         case .upNext:
             return // not a tab in this fork; Up Next lives inside the filter tab
         }
 
         Analytics.track(event, properties: ["initial": isInitial])
+    }
+
+    /// Overflow has no `TabDestination`, so it is tracked on its own.
+    func trackOverflowOpened(isInitial: Bool = false) {
+        Analytics.track(.overflowTabOpened, properties: ["initial": isInitial])
     }
 }
 
@@ -1402,16 +1756,16 @@ extension MainTabBarController {
         }
 
         // A template image so the tab bar tints it like every other item.
-        upNextTabBarItem.image = Self.composeUpNextTabImage(count: count)
-        upNextTabBarItem.selectedImage = Self.composeUpNextTabImage(count: count, isSelected: true)
+        upNextTabBarItem?.image = Self.composeUpNextTabImage(count: count)
+        upNextTabBarItem?.selectedImage = Self.composeUpNextTabImage(count: count, isSelected: true)
 
         // Only celebrate the queue growing — a drain (playing/removing) shouldn't pop.
         if previous.map({ count > $0 }) ?? false { pulseUpNextTarget() }
     }
 
     func resetUpNextTabImage() {
-        upNextTabBarItem.image = UIImage(named: "upnext_tab")
-        upNextTabBarItem.selectedImage = nil
+        upNextTabBarItem?.image = TabDestination.upNext.icon()
+        upNextTabBarItem?.selectedImage = nil
     }
 }
 
@@ -1439,6 +1793,11 @@ private extension MainTabBarController {
     /// Shows the dot while End of Year or What's New has something waiting on Profile.
     func updateProfileTabBadge() {
         let showsWhatsNewBadge = FeatureFlag.whatsNewFeed.enabled && WhatsNewManager.shared.hasUnseenMessages()
-        profileTabBarItem.badgeValue = showsEndOfYearBadge || showsWhatsNewBadge ? "●" : nil
+
+        // The badge follows Profile into Overflow, so clear both items and then
+        // mark whichever one is standing in for Profile right now.
+        profileTabBarItem.badgeValue = nil
+        overflowTabBarItem.badgeValue = nil
+        endOfYearBadgeItem?.badgeValue = showsEndOfYearBadge || showsWhatsNewBadge ? "●" : nil
     }
 }

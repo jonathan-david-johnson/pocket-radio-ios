@@ -112,7 +112,7 @@ extension DiscoverCollectionViewController {
     }
 
     @objc private func checkForScrollTap(_ notification: Notification) {
-        guard let index = notification.object as? Int, index == tabBarItem.tag else { return }
+        guard let destinationID = notification.object as? String, destinationID == tabDestinationID else { return }
 
         let defaultOffset = -PCSearchBarController.defaultHeight - view.safeAreaInsets.top
         if collectionView.contentOffset.y.rounded(.down) > defaultOffset.rounded(.down) {

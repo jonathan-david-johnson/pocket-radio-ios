@@ -13,7 +13,7 @@ Milestone planning documents live at `../docs/ios/current_milestone.md` and `../
 | Item | Value |
 |------|-------|
 | Default sim — "iPhone 17 Pro - No Watch" UDID | `F0042A02-0973-4694-B267-49A1CC21FE19` |
-| Staging bundle id | `au.com.shiftyjelly.podcasts` (NOT `.staging`) |
+| Staging bundle id | `com.jdj.pocketradio` — what the app actually installs and launches as. Do NOT grep `simctl listapps` for `au.com.shiftyjelly.podcasts`; that is upstream's id and returns a false "not installed" |
 | Staging scheme | `"Pocket Casts Staging"` |
 | Staging configuration | `StagingDebug` |
 | Bundle id root xcconfig | `config/PocketCasts.base.xcconfig` (`PRODUCT_BUNDLE_IDENTIFIER_ROOT`) |
@@ -22,6 +22,15 @@ Build/run helpers on the pinned sim:
 - `make build_sim` — build StagingDebug for the sim UDID above
 - `make run_sim` — build, boot Simulator.app, install, and launch the app
 - `SIM_UDID=...` overrides the default sim
+
+On the pinned physical device ("Jonathan iPhone", UDID
+`8119F0C0-0772-5040-93CA-A592AC45C465`, signed with team `X6DVXL53Z3`):
+- `make build_device` — build StagingDebug for that device
+- `make run_device` — build, install, and launch on it
+- `xcrun devicectl list devices` to confirm it is paired and available
+
+Reach for the device, not the sim, whenever the thing under test is a gesture,
+haptics, or real account state.
 
 ## Committing
 
@@ -60,9 +69,19 @@ make test_staging ONLY_TESTING=PocketCastsTests/YourTestClass/testMethodName
 
 ### Test file layout
 
-Unit tests live under `PocketCastsTests/Tests/<Feature>/<ClassName>Tests.swift`. The `PocketCastsTests` target uses an Xcode `PBXFileSystemSynchronizedRootGroup`, so **new test files placed under `PocketCastsTests/Tests/` are picked up automatically** — no `project.pbxproj` edit is required. Main-app source files (e.g. anything under `podcasts/`) still need pbxproj registration. Mirror an existing peer (e.g. `StreamsHostViewController.swift`) when adding new app-side files.
+Unit tests live under `PocketCastsTests/Tests/<Feature>/<ClassName>Tests.swift`. The `PocketCastsTests` target uses an Xcode `PBXFileSystemSynchronizedRootGroup`, so **new test files placed under `PocketCastsTests/Tests/` are picked up automatically** — no `project.pbxproj` edit is required. `podcasts/Main/` is a synchronized root group too, so files added under it are registered automatically — M12 added eleven with zero `project.pbxproj` edits. Elsewhere under `podcasts/` registration is still required; mirror an existing peer (e.g. `StreamsHostViewController.swift`). Prefer placing new files under an already-synchronized directory rather than editing the pbxproj, which conflicts easily.
 
 Test pattern: `XCTest` + `@testable import podcasts`, instantiate the view controller, call `loadViewIfNeeded()`, assert on resulting state. See `PocketCastsTests/Tests/Discover/CategoryPodcastsViewControllerTests.swift` as a representative example.
+
+**The test host is the app.** `UserDefaults.standard` inside a test is the app's
+own preferences on the simulator running the suite, and `ServerSettings` reflects
+whoever is signed in there. So a test that writes or clears a real defaults key
+destroys that simulator's app state, and a test that asserts on sign-in state
+passes or fails depending on the machine. Both have happened: see
+`docs/ios/bugs/bug_1.md` and `docs/ios/bugs/bug_2.md`. Build tests against an
+injected `UserDefaults(suiteName:)` and an injected user lookup, never the
+ambient ones. `PocketCastsTests/Tests/Main/TabLayoutStoreTests.swift` is the
+model to copy.
 
 ### Running Module Tests
 
@@ -203,6 +222,25 @@ When changing the semantics of a stored value (e.g., remapping `lastTabOpened` a
 4. Set the flag.
 
 Include the flag key and gating condition explicitly in the milestone plan — do not leave the choice to the implementing agent.
+
+## Gestures that animate and then revert
+
+When a drag, swipe or reorder tracks the finger correctly and then snaps back on
+release, **prove the callback fires before reasoning about what it received.**
+Add a temporary `NSLog` in the handler, install to the pinned sim, and read it
+back:
+
+```bash
+xcrun simctl spawn $SIM_UDID log show --last 15m --style compact \
+  --predicate 'eventMessage CONTAINS "YOURTAG"'
+```
+
+Silence means the gesture never reached your code and no argument handling can
+fix it. This is not a rare case in SwiftUI: a `.moveDisabled` row in a `List` is
+not a legal *drop target* either, and UIKit refuses any reorder whose final index
+is the one that row occupies — so `onMove` is never called for drops beside it.
+That cost a long detour into index arithmetic on a screen whose indices were
+already correct. Full write-up in `docs/ios/bugs/bug_1.md`.
 
 ## SourceKit diagnostic caveat
 

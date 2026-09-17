@@ -3,22 +3,30 @@ import XCTest
 
 final class MainTabBarControllerTests: XCTestCase {
 
+    private static let keys = [
+        Constants.UserDefaults.lastTabOpened,
+        Constants.UserDefaults.lastTabOpenedMigratedM5,
+        Constants.UserDefaults.lastTabOpenedID,
+        Constants.UserDefaults.lastTabOpenedMigratedM12,
+        Constants.UserDefaults.tabLayout
+    ]
+
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.removeObject(forKey: Constants.UserDefaults.lastTabOpened)
-        UserDefaults.standard.removeObject(forKey: Constants.UserDefaults.lastTabOpenedMigratedM5)
+        Self.keys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
     }
 
     override func tearDown() {
-        UserDefaults.standard.removeObject(forKey: Constants.UserDefaults.lastTabOpened)
-        UserDefaults.standard.removeObject(forKey: Constants.UserDefaults.lastTabOpenedMigratedM5)
+        Self.keys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
         super.tearDown()
     }
 
+    /// Four content destinations plus More fill the default bar.
     func testTabBarHasFiveTabs() {
         let controller = MainTabBarController()
         controller.loadViewIfNeeded()
-        XCTAssertEqual(controller.pcTabs.count, 5)
+
+        XCTAssertEqual(controller.renderedDestinations, [.podcasts, .playlists, .discover, .streams])
 
         // Under Liquid Glass the mini player is added as a child of the tab bar
         // controller (a tab accessory), so it shows up in `viewControllers`
@@ -27,35 +35,63 @@ final class MainTabBarControllerTests: XCTestCase {
         XCTAssertEqual(tabStacks.count, 5)
     }
 
-    func testNavigateToUpNextSelectsFilterTabAndUpNextSegment() {
+    func testDefaultLayoutIncludesOverflowTab() {
         let controller = MainTabBarController()
         controller.loadViewIfNeeded()
 
-        // Load the filter tab host's view before navigating so viewDidLoad fires
-        // and showChild(playlistsNav) establishes the initial child state.
-        guard let filterIndex = controller.pcTabs.firstIndex(of: .filter) else {
-            return XCTFail("Filter tab missing")
-        }
-        let nav = controller.viewControllers?[filterIndex] as? UINavigationController
-        let host = nav?.viewControllers.first as? PlaylistsHostViewController
-        host?.loadViewIfNeeded()
+        XCTAssertTrue(TabLayoutStore.shared.load().renderPlan(capacity: 5).needsOverflow)
+        XCTAssertEqual(controller.tabBar.items?.count, 5)
+        XCTAssertEqual(controller.tabViewControllers.count, 5)
+    }
 
+    func testNavigateToUpNextSelectsMoreAndPushesUpNext() {
+        let controller = MainTabBarController()
+        controller.loadViewIfNeeded()
         controller.navigateToUpNext(false)
-
-        XCTAssertEqual(controller.selectedIndex, filterIndex)
-        XCTAssertGreaterThan(host?.children.count ?? 0, 0, "host should have child view controllers after loadViewIfNeeded")
-        XCTAssertNotNil(host?.children.first as? UpNextViewController,
-                        "navigateToUpNext should leave UpNextViewController visible inside host")
+        XCTAssertEqual(controller.selectedViewController?.tabDestinationID, TabOverflow.id)
+        XCTAssertTrue(controller.overflowNavigationController?.topViewController is UpNextViewController)
     }
 
     func testLastTabOpenedMigrationRemapsOldUpNextIndex() {
         // Pre-M5 layout: [.podcasts, .filter, .discover, .upNext, .streams, .profile]
         // Old upNext raw index = 3.
         UserDefaults.standard.set(3, forKey: Constants.UserDefaults.lastTabOpened)
-        UserDefaults.standard.removeObject(forKey: Constants.UserDefaults.lastTabOpenedMigratedM5)
+
         let controller = MainTabBarController()
         controller.loadViewIfNeeded()
-        // After migration, opening old upNext should land on filter tab.
-        XCTAssertEqual(controller.selectedIndex, controller.pcTabs.firstIndex(of: .filter))
+
+        // After both migrations, opening old upNext should land on the playlists tab.
+        XCTAssertEqual(UserDefaults.standard.string(forKey: Constants.UserDefaults.lastTabOpenedID),
+                       TabDestination.playlists.id)
+        XCTAssertEqual(controller.selectedIndex, controller.renderedDestinations.firstIndex(of: .playlists))
+    }
+
+    /// Selection is restored by identity, so a reordered layout still opens the
+    /// destination the user last used rather than whatever now sits at that index.
+    func testSelectedTabIsRestoredByDestinationIDNotIndex() {
+        UserDefaults.standard.set(TabDestination.streams.id, forKey: Constants.UserDefaults.lastTabOpenedID)
+        UserDefaults.standard.set(true, forKey: Constants.UserDefaults.lastTabOpenedMigratedM12)
+
+        let reordered = TabLayout(slots: [TabSlot(.streams), TabSlot(.podcasts), TabSlot(.playlists),
+                                          TabSlot(.discover), TabSlot(.profile)])
+        TabLayoutStore.shared.save(reordered)
+
+        let controller = MainTabBarController()
+        controller.loadViewIfNeeded()
+
+        XCTAssertEqual(controller.renderedDestinations.first, .streams)
+        XCTAssertEqual(controller.selectedIndex, 0)
+    }
+
+    /// `tabBarItem.tag` no longer carries meaning; identity lives on the
+    /// destination id instead.
+    func testRootViewControllersCarryTheirDestinationID() {
+        let controller = MainTabBarController()
+        controller.loadViewIfNeeded()
+
+        for (index, destination) in controller.renderedDestinations.enumerated() {
+            let nav = controller.tabViewControllers[safe: index] as? UINavigationController
+            XCTAssertEqual(nav?.viewControllers.first?.tabDestinationID, destination.id)
+        }
     }
 }

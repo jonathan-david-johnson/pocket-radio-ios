@@ -319,11 +319,12 @@ extension MainTabBarController {
     }
 
     func upNextTabButtonFrame(in target: UIView) -> CGRect? {
-        guard let index = pcTabs.firstIndex(of: .upNext) else { return nil }
+        guard let index = renderedDestinations.firstIndex(of: .upNext) else { return nil }
 
         // Fallback: even split of the tab bar so the animation still targets
-        // roughly the right place if the button view can't be located.
-        let count = max(pcTabs.count, 1)
+        // roughly the right place if the button view can't be located. Counts
+        // the bar's own items so an Overflow tab is included.
+        let count = max(tabBar.items?.count ?? renderedDestinations.count, 1)
         guard tabBar.bounds.width > 0 else { return nil }
         let itemWidth = tabBar.bounds.width / CGFloat(count)
         let itemRect = CGRect(x: itemWidth * CGFloat(index), y: 0, width: itemWidth, height: tabBar.bounds.height)
@@ -385,7 +386,7 @@ extension MainTabBarController {
     /// buttons into per-tab slots by horizontal position, and return every
     /// button in the Up Next slot so the overlapping copies animate together.
     private func upNextTabButtonViews() -> [UIView] {
-        guard let index = pcTabs.firstIndex(of: .upNext) else { return [] }
+        guard let index = renderedDestinations.firstIndex(of: .upNext) else { return [] }
 
         var buttons: [UIView] = []
         var stack = Array(tabBar.subviews)

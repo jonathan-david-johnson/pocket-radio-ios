@@ -43,6 +43,15 @@ class PlaybackEffects {
     var volumeBoost = false
     var isGlobal: Bool = true
 
+    /// Radio consumes a live source at its native rate. Never mutate or cache
+    /// the podcast's effects as radio state; switching back must restore them.
+    static func forPlayback(isRadio: Bool, configuredEffects: @autoclosure () -> PlaybackEffects) -> PlaybackEffects {
+        guard isRadio else { return configuredEffects() }
+        let neutral = PlaybackEffects()
+        neutral.isGlobal = false
+        return neutral
+    }
+
     class func effectsFor(podcast: Podcast) -> PlaybackEffects {
         if !podcast.overrideGlobalEffects { return globalEffects() }
 

@@ -86,6 +86,14 @@ If invoked without an argument, ask the user which id to use. Suggest the next s
    1. `make run_sim`
    2. <Numbered steps the human walks through.>
 
+   ## Hand-performed interactions
+
+   <One line per gesture this milestone's UI depends on. The human ticks
+   these, not the agent. Leave the section present and empty only if the
+   milestone touches no gesture-driven UI, and say so explicitly.>
+
+   - [ ] <gesture> — <what should happen>
+
    ## Agentic plan
 
    Sequential phases. Each agent reads this file as ground truth.
@@ -101,6 +109,9 @@ If invoked without an argument, ask the user which id to use. Suggest the next s
 
    ### Phase 3 — Manual smoke
    - Human runs Manual smoke list. Sign off before commit.
+   - Human performs every Hand-performed interaction. A milestone touching
+     drag, swipe, long-press, pinch or scroll is not complete while that
+     list has unticked lines.
    ```
 
    Do not fill in `<bracketed>` placeholders — leave them for the user. The skill creates scaffolding, not content.
@@ -135,6 +146,13 @@ Then ask: "Open the new milestone file so we can fill in the plan?"
 ## Anti-patterns
 
 - Do NOT write any content into the new milestone file beyond the template. The user writes the goal.
+- Do NOT mark a milestone COMPLETED while its **Hand-performed interactions**
+  list has unticked lines, however green the test suite is. Gesture handling
+  is routinely unreachable from XCTest: a `moveDisabled` SwiftUI row silently
+  refuses drops at its own index, so `onMove` is never called and a model test
+  that invokes the handler directly passes against a screen that does nothing.
+  M12.2 shipped that exact bug with twelve passing tests. See
+  `docs/ios/bugs/bug_1.md`.
 - Do NOT touch `pocket-casts-ios` files or commits.
 - Do NOT push. Pushing is the user's call.
 - Do NOT skip step 3 (status confirmation). If the previous milestone wasn't shipped, the user needs to decide whether to mark it COMPLETED, leave it open, or rename it.

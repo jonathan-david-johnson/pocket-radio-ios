@@ -139,6 +139,11 @@ struct Constants {
         static let lastFilterShown = "SJLastFilter"
         static let lastTabOpened = "SJLastTabOpened"
         static let lastTabOpenedMigratedM5 = "SJLastTabOpenedMigratedM5"
+        /// M12: the selected tab is stored as a `TabDestination` id, not an index.
+        static let lastTabOpenedID = "SJLastTabOpenedID"
+        static let lastTabOpenedMigratedM12 = "SJLastTabOpenedMigratedM12"
+        /// M12: the user's `TabLayout`, JSON encoded.
+        static let tabLayout = "SJTabLayout"
         static let radioFavoritesSeededM6 = "RadioFavoritesSeededM6"
         static let radioFavoritesSeededM7 = "RadioFavoritesSeededM7"
         static let lastImageRefreshTime = "SJLastImageRefreshDate"

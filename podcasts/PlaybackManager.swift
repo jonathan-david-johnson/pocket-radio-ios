@@ -1215,6 +1215,10 @@ class PlaybackManager: ServerPlaybackDelegate {
     }
 
     func effects() -> PlaybackEffects {
+        PlaybackEffects.forPlayback(isRadio: isLiveStream(), configuredEffects: configuredEffects())
+    }
+
+    private func configuredEffects() -> PlaybackEffects {
         if let currentEffects {
             return currentEffects
         }
@@ -1229,7 +1233,9 @@ class PlaybackManager: ServerPlaybackDelegate {
     }
 
     func changeEffects(_ effects: PlaybackEffects) {
-        guard let episode = currentEpisode else { return }
+        // Keyboard and remote speed commands can still reach this while radio
+        // is playing. Ignore them rather than rewriting podcast preferences.
+        guard !isLiveStream(), let episode = currentEpisode else { return }
 
         // round it to the nearest 0.1, so we end up with 1.5 not 1.53667346262
         effects.playbackSpeed = round(effects.playbackSpeed * 10.0) / 10.0
