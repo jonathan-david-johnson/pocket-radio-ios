@@ -43,8 +43,8 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     private lazy var overflowTabBarItem = UITabBarItem(title: TabOverflow.title, image: TabOverflow.icon(), tag: 0)
 
     /// The Overflow tab's navigation controller, or `nil` when the layout needs
-    /// no Overflow — which is the case for the default layout.
-    private var overflowNavigationController: UINavigationController?
+    /// no Overflow.
+    private(set) var overflowNavigationController: UINavigationController?
 
     /// Overflow is always the last tab, so its index is simply the number of
     /// promoted destinations. Derived rather than stored so it cannot drift out
@@ -188,8 +188,7 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
 
     /// Builds `viewControllers` from the persisted `TabLayout`.
     ///
-    /// The default layout produces exactly the five tabs the app had before M12,
-    /// in the same order, with the same titles and icons.
+    /// The default layout renders four content tabs plus More.
     private func buildTabs() {
         buildTabs(from: TabLayoutStore.shared.load(), animated: false)
     }
@@ -216,8 +215,7 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
             return navController
         }
 
-        // Overflow is derived, always last, and absent when it would be empty —
-        // which is what keeps the default layout identical to the pre-M12 bar.
+        // Overflow is derived, always last, and absent when it would be empty.
         // Nothing listed inside it is constructed here: an unpromoted
         // destination is built when a row is tapped or a deep link resolves
         // into it, so it costs nothing at launch.
@@ -235,7 +233,27 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
             controllers.append(navController)
         }
 
+        // The mini player is a child of this controller so it can serve as the
+        // bottom accessory under Liquid Glass. That puts it in `viewControllers`
+        // after the tabs, with no tab item of its own — and `setViewControllers`
+        // would drop it on a rebuild. Re-attach whatever was not a tab.
+        let nonTabChildren = children.filter { $0.tabDestinationID == nil }
+
         setViewControllers(controllers, animated: animated)
+
+        for child in nonTabChildren where child.parent == nil {
+            addChild(child)
+            child.didMove(toParent: self)
+        }
+    }
+
+    /// The navigation stacks that root tabs, in bar order.
+    ///
+    /// Not the same as `viewControllers`: the mini player is a child of this
+    /// controller so it can be the bottom accessory under Liquid Glass, which
+    /// puts it in `viewControllers` without giving it a tab.
+    var tabViewControllers: [UIViewController] {
+        (viewControllers ?? []).filter { $0.tabDestinationID != nil }
     }
 
     private func tabBarItem(for destination: TabDestination) -> UITabBarItem {
@@ -799,19 +817,7 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     }
 
     func navigateToUpNext(_ animated: Bool) {
-        // The one resolution *chain*: the Up Next tab if it is ever promoted,
-        // otherwise the Up Next segment of the Playlists host, as today.
-        //
-        // Up Next is an *extra* destination, so it gets no Overflow row when it
-        // is unpromoted — `host(for:)` must not be asked for it blindly.
-        if renderedDestinations.contains(.upNext) {
-            popToDestinationRoot(.upNext, in: host(for: .upNext))
-            return
-        }
-
-        guard let playlistsHost = popToDestinationRoot(.playlists, in: host(for: .playlists)) as? PlaylistsHostViewController else { return }
-
-        playlistsHost.selectUpNext()
+        popToDestinationRoot(.upNext, in: host(for: .upNext), animated: animated)
     }
 
     func navigateToProfile(row: ProfileViewController.TableRow? = nil, animated: Bool) {
@@ -1102,8 +1108,7 @@ class MainTabBarController: UITabBarController, NavigationProtocol {
     /// Total by construction for every **core** destination: Overflow exists
     /// whenever the complement is non-empty, so an unpromoted core destination
     /// always has a home. An *extra* destination that is neither promoted nor
-    /// truncated has none; `navigateToUpNext` is the only caller in that
-    /// position and resolves its chain before asking.
+    /// truncated has no guaranteed tab-layout home.
     @discardableResult
     func host(for destination: TabDestination) -> UINavigationController {
         if let index = renderedDestinations.firstIndex(of: destination),

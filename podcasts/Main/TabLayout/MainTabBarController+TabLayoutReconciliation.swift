@@ -130,8 +130,7 @@ extension MainTabBarController {
     /// time, so a reload is the whole update. A *truncated* playlist slot lives
     /// there rather than in the bar, and it gets renamed just the same.
     private func refreshOverflowRows() {
-        guard let navController = viewControllers?.last as? UINavigationController,
-              navController.tabDestinationID == TabOverflow.id,
+        guard let navController = overflowNavigationController,
               let overflow = navController.viewControllers.first as? OverflowViewController else {
             return
         }

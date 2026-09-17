@@ -32,9 +32,10 @@ struct TabLayout: Codable, Equatable {
         self.updatedAt = updatedAt
     }
 
-    /// Today's five tabs, in today's order. A user who never opens the setting
-    /// sees exactly this.
-    static let `default` = TabLayout(slots: TabDestination.core.map(TabSlot.init),
+    /// Default priority: four content tabs, then Profile and Up Next in More.
+    /// Explicit rather than derived from the catalog so adding a core destination
+    /// does not silently change stored default priorities.
+    static let `default` = TabLayout(slots: [TabDestination.podcasts, .playlists, .discover, .streams].map(TabSlot.init),
                                      updatedAt: Date(timeIntervalSince1970: 0))
 
     /// How many tab items the current device can render.

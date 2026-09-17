@@ -8,22 +8,22 @@ import UIKit
 /// `docs/ios/adr/0001-core-vs-extra-destinations-and-derived-overflow.md` for
 /// why the catalog is split into core and extra destinations.
 enum TabDestination: Hashable {
-    // Core — the tab bar is the only entry point.
+    // Core — always available in the bar or More.
     case podcasts
     case playlists
     case discover
     case streams
     case profile
-
-    // Extra — reachable elsewhere in the app, so they need no Overflow row.
     case upNext
+
+    // Extra — optional shortcuts, removable from the tab layout.
     case playlist(uuid: String)
 
     /// The prefix that distinguishes a playlist slot from a bare destination.
     static let playlistIDPrefix = "playlist:"
 
     /// Core destinations, in the order they appear in the default layout.
-    static let core: [TabDestination] = [.podcasts, .playlists, .discover, .streams, .profile]
+    static let core: [TabDestination] = [.podcasts, .playlists, .discover, .streams, .profile, .upNext]
 
     /// Stable identity. **Persisted in UserDefaults and synced to Supabase —
     /// these strings can never change.**
@@ -74,13 +74,12 @@ enum TabDestination: Hashable {
         }
     }
 
-    /// `true` when the tab bar is the only way in, and therefore when Overflow
-    /// has to cover this destination if it is not promoted.
+    /// Required destinations remain in Overflow when not promoted.
     var isCore: Bool {
         switch self {
-        case .podcasts, .playlists, .discover, .streams, .profile:
+        case .podcasts, .playlists, .discover, .streams, .profile, .upNext:
             return true
-        case .upNext, .playlist:
+        case .playlist:
             return false
         }
     }

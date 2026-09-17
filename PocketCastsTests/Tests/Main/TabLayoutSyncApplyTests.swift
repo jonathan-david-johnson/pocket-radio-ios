@@ -57,7 +57,7 @@ final class TabLayoutSyncApplyTests: XCTestCase {
         let applied = TabLayoutApplier.applyFromSync(layout(.streams, .podcasts), to: controller)
 
         XCTAssertFalse(applied, "nothing may be torn down from under a presented screen")
-        XCTAssertEqual(controller.renderedDestinations, TabDestination.core,
+        XCTAssertEqual(controller.renderedDestinations, [.podcasts, .playlists, .discover, .streams],
                        "the live bar is untouched")
         XCTAssertEqual(TabLayoutStore.shared.load().slots.map(\.destinationID), ["streams", "podcasts"],
                        "but the layout is persisted, so it renders at next launch")
@@ -67,7 +67,8 @@ final class TabLayoutSyncApplyTests: XCTestCase {
         let controller = makeController(with: TabLayout.default)
 
         guard let navController = controller.viewControllers?.first as? UINavigationController else {
-            return XCTFail("every tab should be wrapped in a navigation controller")
+            XCTFail("every tab should be wrapped in a navigation controller")
+            return
         }
         navController.pushViewController(UIViewController(), animated: false)
         XCTAssertFalse(controller.isSafeToRebuild)
@@ -75,7 +76,7 @@ final class TabLayoutSyncApplyTests: XCTestCase {
         let applied = TabLayoutApplier.applyFromSync(layout(.streams, .podcasts), to: controller)
 
         XCTAssertFalse(applied)
-        XCTAssertEqual(controller.renderedDestinations, TabDestination.core)
+        XCTAssertEqual(controller.renderedDestinations, [.podcasts, .playlists, .discover, .streams])
         XCTAssertEqual(TabLayoutStore.shared.load().slots.map(\.destinationID), ["streams", "podcasts"])
     }
 
@@ -83,7 +84,8 @@ final class TabLayoutSyncApplyTests: XCTestCase {
         let controller = makeController(with: TabLayout.default)
 
         guard let navController = controller.viewControllers?.first as? UINavigationController else {
-            return XCTFail("every tab should be wrapped in a navigation controller")
+            XCTFail("every tab should be wrapped in a navigation controller")
+            return
         }
         present(UIViewController(), from: navController, window: controller)
 

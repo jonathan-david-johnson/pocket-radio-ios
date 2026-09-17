@@ -44,14 +44,15 @@ final class TabBarRebuildTests: XCTestCase {
         let controller = makeController(with: TabLayout.default)
 
         guard let discoverIndex = controller.renderedDestinations.firstIndex(of: .discover) else {
-            return XCTFail("Discover should be promoted in the default layout")
+            XCTFail("Discover should be promoted in the default layout")
+            return
         }
         controller.selectedIndex = discoverIndex
 
         // Discover moves from index 2 to index 0.
         controller.rebuildTabs(from: layout(.discover, .podcasts, .playlists, .streams, .profile), animated: false)
 
-        XCTAssertEqual(controller.renderedDestinations, [.discover, .podcasts, .playlists, .streams, .profile])
+        XCTAssertEqual(controller.renderedDestinations, [.discover, .podcasts, .playlists, .streams])
         XCTAssertEqual(controller.selectedIndex, 0)
         XCTAssertEqual(controller.renderedDestinations[safe: controller.selectedIndex], .discover)
     }
@@ -77,7 +78,8 @@ final class TabBarRebuildTests: XCTestCase {
         let controller = makeController(with: TabLayout.default)
 
         guard let streamsIndex = controller.renderedDestinations.firstIndex(of: .streams) else {
-            return XCTFail("Streams should be promoted in the default layout")
+            XCTFail("Streams should be promoted in the default layout")
+            return
         }
         controller.selectedIndex = streamsIndex
 
@@ -92,10 +94,11 @@ final class TabBarRebuildTests: XCTestCase {
     /// but it no longer has a *tab*, so the selection cannot follow it there.
     /// First slot, not the Overflow row that now lists it.
     func testRemovingTheSelectedDestinationDoesNotSelectOverflow() {
-        let controller = makeController(with: TabLayout.default)
+        let controller = makeController(with: layout(.profile, .podcasts, .streams))
 
         guard let profileIndex = controller.renderedDestinations.firstIndex(of: .profile) else {
-            return XCTFail("Profile should be promoted in the default layout")
+            XCTFail("Profile should be promoted in this layout")
+            return
         }
         controller.selectedIndex = profileIndex
 
@@ -103,37 +106,37 @@ final class TabBarRebuildTests: XCTestCase {
 
         XCTAssertEqual(controller.selectedIndex, 0)
         XCTAssertNotEqual(controller.selectedViewController?.tabDestinationID, TabOverflow.id)
-        XCTAssertEqual(overflowViewController(in: controller)?.destinations, [.playlists, .discover, .profile])
+        XCTAssertEqual(overflowViewController(in: controller)?.destinations, [.playlists, .discover, .profile, .upNext])
     }
 
-    // MARK: - Gaining and losing Overflow
+    // MARK: - Rebuilding Overflow
 
-    func testRebuildingIntoALayoutThatGainsOverflow() {
+    func testRebuildingIntoASmallerLayoutUpdatesOverflow() {
         let controller = makeController(with: TabLayout.default)
 
-        XCTAssertNil(overflowNav(in: controller), "the default layout promotes every core destination")
-        XCTAssertEqual(controller.viewControllers?.count, 5)
+        XCTAssertNotNil(overflowNav(in: controller), "six required destinations need More")
+        XCTAssertEqual(controller.tabViewControllers.count, 5)
 
         controller.rebuildTabs(from: layout(.podcasts, .streams), animated: false)
 
         XCTAssertEqual(controller.renderedDestinations, [.podcasts, .streams])
         // Two promoted slots plus the derived Overflow tab.
-        XCTAssertEqual(controller.viewControllers?.count, 3)
+        XCTAssertEqual(controller.tabViewControllers.count, 3)
         XCTAssertNotNil(overflowNav(in: controller))
-        XCTAssertEqual(overflowViewController(in: controller)?.destinations, [.playlists, .discover, .profile])
+        XCTAssertEqual(overflowViewController(in: controller)?.destinations, [.playlists, .discover, .profile, .upNext])
     }
 
-    func testRebuildingIntoALayoutThatLosesOverflow() {
+    func testRebuildingIntoDefaultKeepsRequiredDestinationsInOverflow() {
         let controller = makeController(with: layout(.podcasts, .streams))
 
         XCTAssertNotNil(overflowNav(in: controller))
-        XCTAssertEqual(controller.viewControllers?.count, 3)
+        XCTAssertEqual(controller.tabViewControllers.count, 3)
 
         controller.rebuildTabs(from: TabLayout.default, animated: false)
 
-        XCTAssertEqual(controller.renderedDestinations, [.podcasts, .playlists, .discover, .streams, .profile])
-        XCTAssertEqual(controller.viewControllers?.count, 5)
-        XCTAssertNil(overflowNav(in: controller))
+        XCTAssertEqual(controller.renderedDestinations, [.podcasts, .playlists, .discover, .streams])
+        XCTAssertEqual(controller.tabViewControllers.count, 5)
+        XCTAssertEqual(overflowViewController(in: controller)?.destinations, [.profile, .upNext])
     }
 
     /// Overflow's id names a position, not a destination. Sitting on Overflow
@@ -153,19 +156,18 @@ final class TabBarRebuildTests: XCTestCase {
                        TabOverflow.id)
     }
 
-    /// ...and rebuilding into a layout that no longer needs Overflow has to fall
-    /// back, because the reserved id now names nothing.
-    func testSelectionOnOverflowFallsBackWhenOverflowGoesAway() {
+    /// Default still has More; selection follows its new index.
+    func testSelectionOnOverflowSurvivesRebuildingToDefault() {
         let controller = makeController(with: layout(.podcasts, .streams))
 
         controller.selectedIndex = 2
 
         controller.rebuildTabs(from: TabLayout.default, animated: false)
 
-        XCTAssertNil(overflowNav(in: controller))
-        XCTAssertEqual(controller.selectedIndex, 0)
+        XCTAssertNotNil(overflowNav(in: controller))
+        XCTAssertEqual(controller.selectedIndex, 4)
         XCTAssertEqual(UserDefaults.standard.string(forKey: Constants.UserDefaults.lastTabOpenedID),
-                       TabDestination.podcasts.id)
+                       TabOverflow.id)
     }
 
     // MARK: - The persisted selection
@@ -176,7 +178,8 @@ final class TabBarRebuildTests: XCTestCase {
         let controller = makeController(with: TabLayout.default)
 
         guard let playlistsIndex = controller.renderedDestinations.firstIndex(of: .playlists) else {
-            return XCTFail("Playlists should be promoted in the default layout")
+            XCTFail("Playlists should be promoted in the default layout")
+            return
         }
         controller.selectedIndex = playlistsIndex
 
@@ -211,7 +214,7 @@ final class TabBarRebuildTests: XCTestCase {
 
         controller.rebuildTabs(from: layout(.streams, .podcasts), animated: false)
 
-        XCTAssertEqual(controller.viewControllers?.count, controller.renderedDestinations.count + 1)
+        XCTAssertEqual(controller.tabViewControllers.count, controller.renderedDestinations.count + 1)
 
         for (index, destination) in controller.renderedDestinations.enumerated() {
             let nav = controller.viewControllers?[index] as? UINavigationController
@@ -244,7 +247,7 @@ final class TabBarRebuildTests: XCTestCase {
         controller.rebuildTabs(from: TabLayout(slots: []), animated: false)
 
         XCTAssertTrue(controller.renderedDestinations.isEmpty)
-        XCTAssertEqual(controller.viewControllers?.count, 1)
+        XCTAssertEqual(controller.tabViewControllers.count, 1)
         XCTAssertEqual(controller.selectedIndex, 0)
         XCTAssertEqual(overflowViewController(in: controller)?.destinations, TabDestination.core)
     }
@@ -254,7 +257,7 @@ final class TabBarRebuildTests: XCTestCase {
     func testRebuildReinstallsThePositionalTabShortcuts() {
         let controller = makeController(with: TabLayout.default)
 
-        XCTAssertEqual(controller.tabKeyCommands.count, 5)
+        XCTAssertEqual(controller.tabKeyCommands.count, 4)
 
         controller.rebuildTabs(from: layout(.streams, .podcasts), animated: false)
 
@@ -263,21 +266,26 @@ final class TabBarRebuildTests: XCTestCase {
         XCTAssertEqual(controller.tabKeyCommands.first?.input, "1")
     }
 
-    /// The mini player is not part of `viewControllers`, so replacing them must
-    /// leave it attached and playback untouched. `setupMiniPlayer()` runs once,
-    /// from `viewDidLoad`.
+    /// Under Liquid Glass the mini player is a child of the tab bar controller
+    /// so it can serve as the bottom accessory, which puts it in
+    /// `viewControllers` beside the tabs. Replacing the tabs must leave it
+    /// attached and playback untouched. `setupMiniPlayer()` runs once, from
+    /// `viewDidLoad`.
     func testMiniPlayerSurvivesARebuild() {
         let controller = makeController(with: TabLayout.default)
 
         guard let miniPlayer = NavigationManager.sharedManager.miniPlayer else {
-            return XCTFail("the tab bar controller should have installed a mini player")
+            XCTFail("the tab bar controller should have installed a mini player")
+            return
         }
 
         controller.rebuildTabs(from: layout(.streams, .podcasts), animated: false)
 
         XCTAssertTrue(NavigationManager.sharedManager.miniPlayer === miniPlayer,
                       "a rebuild must not replace the mini player")
-        XCTAssertFalse(controller.viewControllers?.contains(miniPlayer) ?? false,
+        XCTAssertTrue(miniPlayer.parent === controller,
+                      "a rebuild must leave the mini player attached")
+        XCTAssertFalse(controller.tabViewControllers.contains(miniPlayer),
                        "the mini player is attached beside the tabs, not as one of them")
     }
 
@@ -307,7 +315,7 @@ final class TabBarRebuildTests: XCTestCase {
     }
 
     private func overflowNav(in controller: MainTabBarController) -> UINavigationController? {
-        guard let nav = controller.viewControllers?.last as? UINavigationController,
+        guard let nav = controller.tabViewControllers.last as? UINavigationController,
               nav.tabDestinationID == TabOverflow.id else {
             return nil
         }

@@ -21,13 +21,12 @@ final class MainTabBarControllerTests: XCTestCase {
         super.tearDown()
     }
 
-    /// M12: the default layout must render exactly the five destinations the app
-    /// had before the layout became configurable, in the same order.
+    /// Four content destinations plus More fill the default bar.
     func testTabBarHasFiveTabs() {
         let controller = MainTabBarController()
         controller.loadViewIfNeeded()
 
-        XCTAssertEqual(controller.renderedDestinations, [.podcasts, .playlists, .discover, .streams, .profile])
+        XCTAssertEqual(controller.renderedDestinations, [.podcasts, .playlists, .discover, .streams])
 
         // Under Liquid Glass the mini player is added as a child of the tab bar
         // controller (a tab accessory), so it shows up in `viewControllers`
@@ -36,33 +35,21 @@ final class MainTabBarControllerTests: XCTestCase {
         XCTAssertEqual(tabStacks.count, 5)
     }
 
-    func testDefaultLayoutNeedsNoOverflowTab() {
+    func testDefaultLayoutIncludesOverflowTab() {
         let controller = MainTabBarController()
         controller.loadViewIfNeeded()
 
-        XCTAssertFalse(TabLayoutStore.shared.load().renderPlan(capacity: 5).needsOverflow)
-        XCTAssertEqual(controller.viewControllers?.count, TabLayout.default.slots.count)
+        XCTAssertTrue(TabLayoutStore.shared.load().renderPlan(capacity: 5).needsOverflow)
+        XCTAssertEqual(controller.tabBar.items?.count, 5)
+        XCTAssertEqual(controller.tabViewControllers.count, 5)
     }
 
-    func testNavigateToUpNextSelectsFilterTabAndUpNextSegment() {
+    func testNavigateToUpNextSelectsMoreAndPushesUpNext() {
         let controller = MainTabBarController()
         controller.loadViewIfNeeded()
-
-        // Load the playlists tab host's view before navigating so viewDidLoad fires
-        // and showChild(playlistsNav) establishes the initial child state.
-        guard let playlistsIndex = controller.renderedDestinations.firstIndex(of: .playlists) else {
-            return XCTFail("Playlists tab missing")
-        }
-        let nav = controller.viewControllers?[playlistsIndex] as? UINavigationController
-        let host = nav?.viewControllers.first as? PlaylistsHostViewController
-        host?.loadViewIfNeeded()
-
         controller.navigateToUpNext(false)
-
-        XCTAssertEqual(controller.selectedIndex, playlistsIndex)
-        XCTAssertGreaterThan(host?.children.count ?? 0, 0, "host should have child view controllers after loadViewIfNeeded")
-        XCTAssertNotNil(host?.children.first as? UpNextViewController,
-                        "navigateToUpNext should leave UpNextViewController visible inside host")
+        XCTAssertEqual(controller.selectedViewController?.tabDestinationID, TabOverflow.id)
+        XCTAssertTrue(controller.overflowNavigationController?.topViewController is UpNextViewController)
     }
 
     func testLastTabOpenedMigrationRemapsOldUpNextIndex() {
@@ -103,7 +90,7 @@ final class MainTabBarControllerTests: XCTestCase {
         controller.loadViewIfNeeded()
 
         for (index, destination) in controller.renderedDestinations.enumerated() {
-            let nav = controller.viewControllers?[index] as? UINavigationController
+            let nav = controller.tabViewControllers[safe: index] as? UINavigationController
             XCTAssertEqual(nav?.viewControllers.first?.tabDestinationID, destination.id)
         }
     }

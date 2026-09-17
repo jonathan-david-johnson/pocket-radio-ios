@@ -35,7 +35,7 @@ final class TabLayoutEditorTests: XCTestCase {
 
         XCTAssertEqual(editor.bar.count, 4, "the bar can never exceed its capacity")
         XCTAssertEqual(ids(editor.bar), ["playlist:abc", "podcasts", "playlists", "discover"])
-        XCTAssertEqual(ids(editor.belowMore), ["streams", "profile"])
+        XCTAssertEqual(ids(editor.belowMore), ["streams", "profile", "upNext"])
     }
 
     func testRefusesToEmptyTheBar() {
@@ -54,40 +54,30 @@ final class TabLayoutEditorTests: XCTestCase {
         let editor = self.editor([.playlist(uuid: "new-releases"), .streams])
 
         XCTAssertEqual(ids(editor.bar), ["playlist:new-releases", "streams"])
-        XCTAssertEqual(ids(editor.belowMore), ["podcasts", "playlists", "discover", "profile"])
-        XCTAssertEqual(editor.rows.count, 7, "two bar rows, the More row, four rows inside More")
+        XCTAssertEqual(ids(editor.belowMore), ["podcasts", "playlists", "discover", "profile", "upNext"])
+        XCTAssertEqual(editor.rows.count, 8)
     }
 
     func testDraggingBelowMoreDemotesACoreDestination() {
         let editor = self.editor(TabDestination.core)
-        XCTAssertFalse(editor.needsMoreRow, "five core destinations fit exactly, so there is no More")
-
-        // No More row yet, so the only way to demote is to drop past the end.
-        editor.move(fromRows: IndexSet(integer: 0), toRow: 5)
-        XCTAssertEqual(ids(editor.bar), ["playlists", "discover", "streams", "profile", "podcasts"],
-                       "a drop past the end with no More row is still a reorder")
-
-        // With a playlist added there is a More row to drag across.
-        editor.add(.playlist(uuid: "abc"))
+        XCTAssertTrue(editor.needsMoreRow)
+        // Six required destinations guarantee a More row at capacity five.
         XCTAssertTrue(editor.needsMoreRow)
         let moreRow = editor.rows.firstIndex(of: .more)
         XCTAssertNotNil(moreRow)
         editor.move(fromRows: IndexSet(integer: 0), toRow: moreRow! + 1)
 
-        XCTAssertFalse(editor.bar.contains(.playlists))
-        XCTAssertTrue(editor.belowMore.contains(.playlists))
+        XCTAssertFalse(editor.bar.contains(.podcasts))
+        XCTAssertTrue(editor.belowMore.contains(.podcasts))
     }
 
     func testDraggingAboveMoreAbsorbsTheLastMoreItemAndRetiresTheMoreRow() {
-        let editor = self.editor([.podcasts, .playlists, .discover, .streams])
-        XCTAssertEqual(ids(editor.belowMore), ["profile"])
-
-        // rows == [podcasts, playlists, discover, streams, .more, profile]
-        editor.move(fromRows: IndexSet(integer: 5), toRow: 0)
-
-        XCTAssertEqual(ids(editor.bar), ["profile", "podcasts", "playlists", "discover", "streams"])
-        XCTAssertFalse(editor.needsMoreRow, "nothing is left inside More, so the row goes away")
-        XCTAssertEqual(editor.barCapacity, 5, "and the bar gets its fifth slot back")
+        let editor = TabLayoutEditor(layout: TabLayout(slots: TabDestination.core.dropLast().map(TabSlot.init)), capacity: 6)
+        XCTAssertEqual(ids(editor.belowMore), ["upNext"])
+        editor.move(fromRows: IndexSet(integer: 6), toRow: 0)
+        XCTAssertEqual(editor.bar.first, .upNext)
+        XCTAssertFalse(editor.needsMoreRow)
+        XCTAssertEqual(editor.barCapacity, 6)
     }
 
     func testAddedPlaylistLandsInsideMoreRatherThanTheBar() {
@@ -97,13 +87,13 @@ final class TabLayoutEditorTests: XCTestCase {
 
         XCTAssertTrue(editor.needsMoreRow)
         XCTAssertEqual(editor.bar.count, 4, "More claimed a slot, so a core destination moved into it")
-        XCTAssertEqual(ids(editor.belowMore), ["playlist:abc", "profile"])
+        XCTAssertEqual(ids(editor.belowMore), ["playlist:abc", "profile", "upNext"])
     }
 
-    func testUpNextCanBeAddedAndPromoted() {
+    func testUpNextIsAlreadyPresentAndCanBePromoted() {
         let editor = self.editor(TabDestination.core)
 
-        XCTAssertTrue(editor.add(.upNext), "the design lets the user promote Up Next; §9 depends on it")
+        XCTAssertFalse(editor.add(.upNext), "required destinations are already present")
         XCTAssertTrue(editor.belowMore.contains(.upNext))
 
         let row = editor.rows.firstIndex(of: .destination(.upNext))
@@ -118,9 +108,10 @@ final class TabLayoutEditorTests: XCTestCase {
     func testCoreDestinationsCannotBeDeleted() {
         let editor = self.editor(TabDestination.core)
 
-        editor.delete(atRows: IndexSet(integer: 0))
-
-        XCTAssertEqual(ids(editor.bar), ids(TabDestination.core))
+        let originalRows = editor.rows
+        editor.delete(atRows: IndexSet(integersIn: 0..<editor.rows.count))
+        XCTAssertEqual(editor.rows, originalRows)
+        XCTAssertFalse(editor.canDelete(.destination(.upNext)))
     }
 
     func testDeletingAPlaylistRemovesItFromTheListEntirely() {
@@ -188,7 +179,7 @@ final class TabLayoutEditorTests: XCTestCase {
 
         XCTAssertEqual(editor.rows.firstIndex(of: .more), 4)
         XCTAssertEqual(ids(editor.bar), ["podcasts", "playlist:a", "playlist:b", "streams"])
-        XCTAssertEqual(ids(editor.belowMore), ["playlist:c", "playlists", "discover", "profile"])
+        XCTAssertEqual(ids(editor.belowMore), ["playlist:c", "playlists", "discover", "profile", "upNext"])
 
         return editor
     }
@@ -201,7 +192,7 @@ final class TabLayoutEditorTests: XCTestCase {
 
         XCTAssertEqual(ids(editor.bar), ["podcasts", "playlist:a", "playlist:b", "playlist:c"],
                        "the dropped row takes the last slot")
-        XCTAssertEqual(ids(editor.belowMore), ["playlists", "discover", "streams", "profile"],
+        XCTAssertEqual(ids(editor.belowMore), ["playlists", "discover", "streams", "profile", "upNext"],
                        "and the row it displaced falls into More")
     }
 
@@ -227,7 +218,7 @@ final class TabLayoutEditorTests: XCTestCase {
 
         XCTAssertEqual(ids(editor.bar), ["podcasts", "playlist:a"])
         XCTAssertEqual(ids(editor.belowMore),
-                       ["playlist:b", "playlist:c", "playlists", "discover", "streams", "profile"])
+                       ["playlist:b", "playlist:c", "playlists", "discover", "streams", "profile", "upNext"])
     }
 
     func testDraggingMoreDownPromotesWhatItPassed() {

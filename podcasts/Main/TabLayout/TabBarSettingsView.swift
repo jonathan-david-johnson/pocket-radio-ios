@@ -189,21 +189,9 @@ private struct AddTabSheet: View {
             .filter { !existing.contains(.playlist(uuid: $0.uuid)) }
     }
 
-    private var showsUpNext: Bool {
-        !existing.contains(.upNext)
-    }
-
     var body: some View {
         NavigationView {
             List {
-                if showsUpNext {
-                    Section {
-                        row(title: TabDestination.upNext.title()) {
-                            onSelect(.upNext)
-                        }
-                    }
-                }
-
                 Section {
                     if playlists.isEmpty {
                         Text("Every playlist is already in the list.")

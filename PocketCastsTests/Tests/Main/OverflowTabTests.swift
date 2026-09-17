@@ -40,7 +40,7 @@ final class OverflowTabTests: XCTestCase {
     func testOverflowHoldsUnpromotedCoreDestinations() {
         let plan = layout(.podcasts, .streams).renderPlan(capacity: 5)
 
-        XCTAssertEqual(plan.overflowDestinations, [.playlists, .discover, .profile])
+        XCTAssertEqual(plan.overflowDestinations, [.playlists, .discover, .profile, .upNext])
     }
 
     /// An *extra* has another home in the app, so leaving it unpromoted must not
@@ -48,12 +48,12 @@ final class OverflowTabTests: XCTestCase {
     func testOverflowNeverHoldsAnUnpromotedExtra() {
         let plan = TabLayout.default.renderPlan(capacity: 5)
 
-        XCTAssertTrue(plan.overflowDestinations.isEmpty)
-        XCTAssertFalse(plan.overflowDestinations.contains(.upNext))
+        XCTAssertEqual(plan.overflowDestinations, [.profile, .upNext])
+        XCTAssertFalse(plan.overflowDestinations.contains(.playlist(uuid: "unpinned")))
     }
 
     func testOverflowHoldsNoExtraWhenEveryCoreDestinationIsPromoted() {
-        let plan = layout(.podcasts, .playlists, .discover, .streams, .profile).renderPlan(capacity: 5)
+        let plan = layout(.podcasts, .playlists, .discover, .streams, .profile, .upNext).renderPlan(capacity: 6)
 
         XCTAssertTrue(plan.overflowDestinations.isEmpty)
     }
@@ -94,32 +94,34 @@ final class OverflowTabTests: XCTestCase {
 
     // MARK: - Rendering
 
-    func testDefaultLayoutRendersNoOverflowTab() {
+    func testDefaultLayoutRendersOverflowTab() {
         let controller = MainTabBarController()
         controller.loadViewIfNeeded()
 
-        XCTAssertEqual(controller.viewControllers?.count, 5)
-        XCTAssertNil(overflowNav(in: controller))
+        XCTAssertEqual(controller.tabViewControllers.count, 5)
+        XCTAssertEqual(overflowViewController(in: controller)?.destinations, [.profile, .upNext])
     }
 
     func testOverflowTabIsRenderedLastAndTitledMore() {
         let controller = makeController(with: layout(.podcasts, .streams))
 
         XCTAssertEqual(controller.renderedDestinations, [.podcasts, .streams])
-        XCTAssertEqual(controller.viewControllers?.count, 3)
+        XCTAssertEqual(controller.tabViewControllers.count, 3)
 
-        guard let nav = controller.viewControllers?.last as? UINavigationController else {
-            return XCTFail("Overflow tab missing")
+        guard let nav = controller.tabViewControllers.last as? UINavigationController else {
+            XCTFail("Overflow tab missing")
+            return
         }
         XCTAssertEqual(nav.tabDestinationID, TabOverflow.id)
 
         guard let overflow = nav.viewControllers.first as? OverflowViewController else {
-            return XCTFail("Overflow tab is not rooted by OverflowViewController")
+            XCTFail("Overflow tab is not rooted by OverflowViewController")
+            return
         }
         overflow.loadViewIfNeeded()
 
         XCTAssertEqual(overflow.title, "More")
-        XCTAssertEqual(overflow.destinations, [.playlists, .discover, .profile])
+        XCTAssertEqual(overflow.destinations, [.playlists, .discover, .profile, .upNext])
     }
 
     /// The render plan drops a slot whose payload has gone missing, rather than
@@ -129,9 +131,9 @@ final class OverflowTabTests: XCTestCase {
 
         XCTAssertEqual(controller.renderedDestinations, [.streams])
         // Streams plus Overflow holding the four unpromoted core destinations.
-        XCTAssertEqual(controller.viewControllers?.count, 2)
+        XCTAssertEqual(controller.tabViewControllers.count, 2)
         XCTAssertEqual(overflowViewController(in: controller)?.destinations,
-                       [.podcasts, .playlists, .discover, .profile])
+                       [.podcasts, .playlists, .discover, .profile, .upNext])
     }
 
     /// Five slots plus Overflow would be six tab items, which is where UIKit
@@ -140,7 +142,7 @@ final class OverflowTabTests: XCTestCase {
     func testRenderedTabCountNeverExceedsCapacity() {
         let controller = makeController(with: layout(.podcasts, .playlists, .discover, .streams, .profile, .upNext))
 
-        XCTAssertEqual(controller.viewControllers?.count, 5)
+        XCTAssertEqual(controller.tabViewControllers.count, 5)
         XCTAssertEqual(controller.renderedDestinations.count, 4)
     }
 
@@ -155,7 +157,8 @@ final class OverflowTabTests: XCTestCase {
         XCTAssertEqual(controller.renderedDestinations, [.playlist(uuid: playlist.uuid), .streams])
 
         guard let nav = controller.viewControllers?.first as? UINavigationController else {
-            return XCTFail("playlist tab missing")
+            XCTFail("playlist tab missing")
+            return
         }
 
         let root = nav.viewControllers.first
@@ -163,10 +166,15 @@ final class OverflowTabTests: XCTestCase {
                       "a promoted playlist must root the same detail screen showFilter pushes")
         XCTAssertEqual(root?.ownTabDestinationID, "playlist:\(playlist.uuid)")
 
-        // Loads the fake nav bar, which is what the tab root adapts: the back
-        // chevron has nothing to pop and must not be shown.
+        // Loads the nav bar, which is what the tab root adapts: the back
+        // affordance has nothing to pop and must not be offered.
         root?.loadViewIfNeeded()
-        XCTAssertTrue((root as? PlaylistTabRootViewController)?.backBtn.isHidden == true)
+        guard let tabRoot = root as? PlaylistTabRootViewController else {
+            XCTFail("promoted playlist did not root the tab variant")
+            return
+        }
+        XCTAssertFalse(Self.offersABackAffordance(tabRoot),
+                       "a playlist rooting a tab has nothing to pop")
         XCTAssertEqual(TabDestination.playlist(uuid: playlist.uuid).title(), "New Releases")
     }
 
@@ -212,13 +220,24 @@ final class OverflowTabTests: XCTestCase {
                              "the playlist must be pushed on top of the More list")
 
         guard let pushed = nav.viewControllers.last as? PlaylistTabRootViewController else {
-            return XCTFail("Overflow did not push the playlist detail screen")
+            XCTFail("Overflow did not push the playlist detail screen")
+            return
         }
 
         pushed.loadViewIfNeeded()
 
-        XCTAssertFalse(pushed.backBtn.isHidden,
-                       "a playlist pushed from Overflow must keep the chevron that returns to More")
+        XCTAssertTrue(Self.offersABackAffordance(pushed),
+                      "a playlist pushed from Overflow must keep the way back to More")
+    }
+
+    /// Whether the screen shows the user any way back.
+    ///
+    /// Without Liquid Glass the detail screen hides the system back button and
+    /// installs its own chevron in the left slot; with it, the system button is
+    /// left in place. Reading both keeps this independent of that mode.
+    private static func offersABackAffordance(_ controller: UIViewController) -> Bool {
+        controller.navigationItem.leftBarButtonItem != nil
+            || !controller.navigationItem.hidesBackButton
     }
 
     // MARK: - host(for:)
@@ -276,7 +295,8 @@ final class OverflowTabTests: XCTestCase {
         controller.navigateToDiscover(category: "news", animated: false)
 
         guard let nav = overflowNav(in: controller) else {
-            return XCTFail("Overflow tab missing")
+            XCTFail("Overflow tab missing")
+            return
         }
         XCTAssertEqual(controller.selectedIndex, 2)
         XCTAssertTrue(nav.viewControllers.last is DiscoverDelegate)
@@ -298,7 +318,8 @@ final class OverflowTabTests: XCTestCase {
         controller.navigateToPodcastList(false)
 
         guard let nav = overflowNav(in: controller) else {
-            return XCTFail("Overflow tab missing")
+            XCTFail("Overflow tab missing")
+            return
         }
         XCTAssertEqual(controller.selectedIndex, 2)
         XCTAssertTrue(nav.viewControllers.first is OverflowViewController,
@@ -306,22 +327,20 @@ final class OverflowTabTests: XCTestCase {
         XCTAssertTrue(nav.viewControllers.last is PodcastListViewController)
     }
 
-    /// Up Next is an *extra*: it has no Overflow row, so it must still fall back
-    /// to the Playlists host segment rather than going nowhere.
-    func testNavigateToUpNextLandsOnThePlaylistsSegmentWhenUpNextIsUnpromoted() {
-        let controller = makeController(with: layout(.playlists, .streams))
-
-        guard let playlistsIndex = controller.renderedDestinations.firstIndex(of: .playlists),
-              let nav = controller.viewControllers?[playlistsIndex] as? UINavigationController,
-              let host = nav.viewControllers.first as? PlaylistsHostViewController else {
-            return XCTFail("Playlists tab missing")
-        }
-        host.loadViewIfNeeded()
-
+    func testNavigateToUpNextUsesMoreWithoutPlaylistsPromoted() {
+        let controller = makeController(with: layout(.streams))
         controller.navigateToUpNext(false)
+        controller.navigateToUpNext(false)
+        XCTAssertEqual(controller.selectedViewController?.tabDestinationID, TabOverflow.id)
+        XCTAssertTrue(overflowNav(in: controller)?.topViewController is UpNextViewController)
+        XCTAssertEqual(overflowNav(in: controller)?.viewControllers.count, 2)
+    }
 
-        XCTAssertEqual(controller.selectedIndex, playlistsIndex)
-        XCTAssertNotNil(host.children.first as? UpNextViewController)
+    func testNavigateToPromotedUpNextSelectsItsOwnTab() {
+        let controller = makeController(with: layout(.upNext, .streams))
+        controller.navigateToUpNext(false)
+        XCTAssertEqual(controller.selectedIndex, 0)
+        XCTAssertEqual(controller.selectedViewController?.tabDestinationID, TabDestination.upNext.id)
     }
 
     // MARK: - Selection persistence
@@ -334,15 +353,14 @@ final class OverflowTabTests: XCTestCase {
         XCTAssertEqual(controller.selectedIndex, 2)
     }
 
-    /// A stored Overflow selection has to degrade gracefully once the layout
-    /// stops needing Overflow at all.
-    func testStoredOverflowSelectionFallsBackToTheFirstTabWhenOverflowIsGone() {
+    /// Required destinations keep More present at capacity five.
+    func testStoredOverflowSelectionIsRestoredOnDefaultLayout() {
         UserDefaults.standard.set(TabOverflow.id, forKey: Constants.UserDefaults.lastTabOpenedID)
 
         let controller = makeController(with: TabLayout.default)
 
-        XCTAssertEqual(controller.selectedIndex, 0)
-        XCTAssertNil(overflowNav(in: controller))
+        XCTAssertEqual(controller.selectedIndex, 4)
+        XCTAssertNotNil(overflowNav(in: controller))
     }
 
     // MARK: - Helpers
@@ -371,7 +389,7 @@ final class OverflowTabTests: XCTestCase {
     }
 
     private func overflowNav(in controller: MainTabBarController) -> UINavigationController? {
-        guard let nav = controller.viewControllers?.last as? UINavigationController,
+        guard let nav = controller.tabViewControllers.last as? UINavigationController,
               nav.tabDestinationID == TabOverflow.id else {
             return nil
         }

@@ -3,9 +3,7 @@ import XCTest
 
 /// M12 — the tab layout model and the pure render rules.
 ///
-/// These are pure-function tests: no view controllers, no UserDefaults. The
-/// property that matters most is `testDefaultLayoutNeedsNoOverflow` — it is
-/// what keeps the bar identical to the pre-M12 hard-coded one.
+/// Pure-function tests: required destinations remain reachable in the bar or More.
 final class TabLayoutTests: XCTestCase {
 
     // MARK: - Destination identity
@@ -39,13 +37,13 @@ final class TabLayoutTests: XCTestCase {
     }
 
     func testCoreDestinations() {
-        XCTAssertEqual(TabDestination.core, [.podcasts, .playlists, .discover, .streams, .profile])
+        XCTAssertEqual(TabDestination.core, [.podcasts, .playlists, .discover, .streams, .profile, .upNext])
 
         for destination in TabDestination.core {
             XCTAssertTrue(destination.isCore, "\(destination.id) should be core")
         }
 
-        XCTAssertFalse(TabDestination.upNext.isCore)
+        XCTAssertTrue(TabDestination.upNext.isCore)
         XCTAssertFalse(TabDestination.playlist(uuid: "abc-123").isCore)
     }
 
@@ -68,28 +66,33 @@ final class TabLayoutTests: XCTestCase {
 
     // MARK: - Default layout
 
-    func testDefaultLayoutIsTodaysFiveDestinations() {
-        XCTAssertEqual(TabLayout.default.slots.map(\.destinationID),
-                       ["podcasts", "playlists", "discover", "streams", "profile"])
-    }
-
-    func testDefaultLayoutRendersExactlyTheFiveCurrentDestinations() {
+    func testDefaultLayoutRendersFourContentTabsAndMore() {
         let plan = TabLayout.default.renderPlan(capacity: 5)
-
-        XCTAssertEqual(plan.visibleDestinations, [.podcasts, .playlists, .discover, .streams, .profile])
-        XCTAssertTrue(plan.truncated.isEmpty)
-        XCTAssertTrue(plan.complement.isEmpty)
+        XCTAssertEqual(plan.visibleDestinations, [.podcasts, .playlists, .discover, .streams])
+        XCTAssertEqual(plan.overflowDestinations, [.profile, .upNext])
+        XCTAssertTrue(plan.needsOverflow)
     }
 
-    /// The property that keeps the bar identical to the pre-M12 one.
-    func testDefaultLayoutNeedsNoOverflow() {
-        XCTAssertFalse(TabLayout.default.renderPlan(capacity: 5).needsOverflow)
+    func testLegacyFiveSlotLayoutKeepsSlotsAndTimestampButGainsUpNextInMore() {
+        let legacy = layout(.podcasts, .playlists, .discover, .streams, .profile)
+        let plan = legacy.renderPlan(capacity: 5)
+        XCTAssertEqual(plan.visibleDestinations, [.podcasts, .playlists, .discover, .streams])
+        XCTAssertEqual(plan.overflowDestinations, [.profile, .upNext])
+        XCTAssertEqual(legacy.slots.count, 5)
+    }
+
+    func testUpNextAppearsExactlyOnceWhetherPromotedTruncatedOrAbsent() {
+        for candidate in [layout(.upNext, .streams), .default,
+                          layout(.podcasts, .playlists, .discover, .streams, .profile, .upNext)] {
+            let plan = candidate.renderPlan(capacity: 5)
+            XCTAssertEqual((plan.visibleDestinations + plan.overflowDestinations).filter { $0 == .upNext }.count, 1)
+        }
     }
 
     // MARK: - needsOverflow truth table
 
     func testNeedsOverflowIsFalseWhenComplementAndTruncationAreBothEmpty() {
-        let plan = layout(.podcasts, .playlists, .discover, .streams, .profile).renderPlan(capacity: 5)
+        let plan = layout(.podcasts, .playlists, .discover, .streams, .profile, .upNext).renderPlan(capacity: 6)
 
         XCTAssertTrue(plan.complement.isEmpty)
         XCTAssertTrue(plan.truncated.isEmpty)
@@ -107,7 +110,7 @@ final class TabLayoutTests: XCTestCase {
     func testNeedsOverflowIsTrueWhenComplementIsNonEmptyWithNoTruncation() {
         let plan = layout(.podcasts, .playlists, .discover, .streams).renderPlan(capacity: 5)
 
-        XCTAssertEqual(plan.complement, [.profile])
+        XCTAssertEqual(plan.complement, [.profile, .upNext])
         XCTAssertTrue(plan.truncated.isEmpty)
         XCTAssertTrue(plan.needsOverflow)
     }
