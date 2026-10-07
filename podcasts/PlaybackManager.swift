@@ -596,6 +596,12 @@ class PlaybackManager: ServerPlaybackDelegate {
     }
     #endif
 
+    #if DEBUG && !os(watchOS) && !APPCLIP && !os(tvOS)
+    // CarPlay harness seam (M13.1): the radio artwork dedupe key survives endPlayback.
+    func _resetRadioStateForTesting() { lastResolvedRadioKey = nil }
+    var _lastResolvedRadioKeyForTesting: String? { lastResolvedRadioKey }
+    #endif
+
     /// Whether playback is currently muted via the in-app mute control.
     /// Live radio uses this in place of skip-back, so the stream stays connected
     /// while audio is silenced. Resets to `false` whenever the current item changes.

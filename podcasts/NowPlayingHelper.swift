@@ -159,6 +159,12 @@ class NowPlayingHelper {
     /// the old song is stale".
     private static var radioTrackStationId: String?
 
+    #if DEBUG
+    // CarPlay harness seam (M13.1): which station's song a rebuild would carry over.
+    class func _resetRadioStateForTesting() { radioTrackStationId = nil }
+    class var _radioTrackStationIdForTesting: String? { radioTrackStationId }
+    #endif
+
     /// Declare a live radio stream as what it is.
     ///
     /// Without `IsLiveStream` the system assumes a seekable item and reserves

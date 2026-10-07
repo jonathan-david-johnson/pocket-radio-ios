@@ -38,6 +38,15 @@ final class TrackArtworkResolver {
         cache.countLimit = 100
     }
 
+    #if DEBUG
+    // CarPlay harness seam (M13.1): resolver key, in-flight task and cache.
+    func _resetForTesting() {
+        lockQueue.sync { currentTask?.cancel(); currentTask = nil; currentKey = nil }
+        cache.removeAllObjects()
+    }
+    var _currentKeyForTesting: String? { lockQueue.sync { currentKey } }
+    #endif
+
     /// Resolve the artwork URL for `entry`. `station` is currently unused
     /// (the caller owns the station-logo fallback), but kept in the signature
     /// to keep the call sites symmetric and future-proof.

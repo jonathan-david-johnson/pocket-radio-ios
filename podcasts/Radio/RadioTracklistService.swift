@@ -38,6 +38,13 @@ final class RadioTracklistService {
         cacheQueue.sync(flags: .barrier) {}
     }
 
+    // CarPlay harness seam (M13.1): cache and failure-toast dedupe, all stations.
+    func _resetForTesting() {
+        cacheQueue.async(flags: .barrier) { self.cache.removeAll() }
+        cacheQueue.sync(flags: .barrier) {}
+        toastQueue.sync { toastedStations.removeAll() }
+    }
+
     func _clearCacheForTesting(stationId: String) {
         cacheQueue.async(flags: .barrier) { [stationId] in
             self.cache.removeValue(forKey: stationId)
