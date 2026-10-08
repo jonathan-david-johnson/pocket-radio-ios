@@ -1,60 +1,90 @@
 # CarPlay output harness
 
-An in-process test harness that plays a **fake radio station** through the **real app code** and reads
-what the system Now Playing display (and so CarPlay and the lock screen) would show.
+The harness runs real playback against a loopback fake world and reads the system Now Playing record. Shared specs live in `contracts/features/now_playing/`.
 
-Run it: `make test_carplay` (from `pocket-radio-ios`). The first time, `make carplay_sim` creates the
-dedicated simulator `PocketRadio CarPlay Tests`. **Never sign in on that simulator.**
+## Enablement and destructive state
 
-## What is fake, what is real
+The harness is opt-in: `CARPLAY_HARNESS=1` enables destructive tests. Without it, they skip before resetting playback. There is no runtime-target validation gate; choosing the safe destination is the operator's responsibility.
 
-| Fake (the outside world) | Real (the code under test) |
+`make test_carplay` supplies `TEST_RUNNER_CARPLAY_HARNESS=1` to Xcode and selects the dedicated **PocketRadio CarPlay Tests** simulator. Use only that signed-out simulator. Never sign it into Pocket Casts or use it for a personal queue. An approved manual check may play real radio while signed out; stop that playback before returning to destructive harness tests.
+
+The device target additionally supplies `TEST_RUNNER_CARPLAY_ON_DEVICE=1`, read in the test process as `CARPLAY_ON_DEVICE=1`. That changes how blocked background account traffic is treated; it is not a destination safety check.
+
+Reset stops playback, closes retained detail controllers, cancels artwork/metadata work, clears local Up Next and display state, and clears the station tracklist/image caches. Actual playback changes the current episode and listening stats. Synthetic podcast rows are removed during teardown. The harness does not restore an arbitrary preexisting queue.
+
+Do not run the device target without explicit approval. The expanded suite has not been device-validated; retained detail tests require signed-out state, and full device runs can change personal playback state.
+
+## Run and select
+
+```sh
+make test_carplay
+make test_carplay CARPLAY_TESTS='CarPlayArtworkTests CarPlayLifecycleTests'
+```
+
+The default selection contains 17 harness self-test classes and five scenario classes:
+
+- `NowPlayingSmokeTests`
+- `CarPlayArtworkTests`
+- `CarPlayLifecycleTests`
+- `CarPlayRaceTests`
+- `CarPlayPolicyTests`
+
+The 15 shared scenarios each appear as their own XCTest result. Their generated selectors have the form `scenario_L<line>_<tags>_<name>` and can also be passed as `CARPLAY_TESTS='ClassName/selector'`. Read the current selector from the log because edits to the feature can change its line number. No second “run every scenario” wrapper duplicates them.
+
+Keep the laptop lid open. Caffeinate does not prevent clamshell sleep. Restart the dedicated simulator after host sleep or stalled playback, and check power logs before accepting timing results.
+
+## What runs
+
+- AVPlayer consumes loopback MP3 with scriptable ICY metadata. No playback mock or scenario-time metadata injection.
+- Real tracklist/artwork resolution consumes KCRW-shaped tracklists and query-specific iTunes responses.
+- Kingfisher downloads uniquely addressed solid-color artwork from the fake server.
+- `MPNowPlayingInfoCenter` is observed directly. Color and bundled-logo comparisons are probe assertions, not image stand-ins.
+- Feature parsing/step registration and exact known-bug matching have their own self-tests.
+
+This exercises the publisher, not rendered CarPlay UI. In the observed manual simulator setup, CarPlay omits a visible cover and uses background colors instead. Neither cover omission nor approximate gradient colors prove what artwork was published. MP3/ICY fixtures do not cover a real station's HLS/AAC path.
+
+## Fake world and guard
+
+`FakeWorld` owns the stream, tracklist, iTunes, artwork and network guard. One scenario has one guard owner; a second station and local podcast stay under that owner. The app uses its normal cache and download paths.
+
+`NetworkGuard` intercepts URLSession.shared and Kingfisher, records requests, serves exact fixtures and rejects unexpected guarded hosts as ordinary harness failures. AVPlayer bypasses URLProtocol, so every media URL must be loopback. The guard does not cover every app session; do not claim full network hermeticity.
+
+Retained detail scenes have fixtures for their auxiliary requests. Cleanup closes the controller and cancels its work before cache reset. Local podcast fixtures remove their own synthetic database rows.
+
+## Narrow expected failures
+
+Shared feature files contain no known-bug tags. Each iOS class supplies `FeatureTestCase.knownBugs`, keyed by exact unique scenario name.
+
+A `KnownBug` matches one exact Then step and one classified `StepFailure.outputAssertion` diagnostic. The runner opens a strict expected-failure scope only for that output check. A passing marked check fails; wrong identity, readiness, undefined/ambiguous steps, missing input evidence, unexpected requests, reset and teardown remain ordinary failures. Later checks still run rather than disappearing into a whole-scenario expected failure.
+
+The current mappings identify defects 4, 5 and 6: stale metadata/artwork, lifecycle artwork loss and artwork crossing playback identities. Remove the appropriate marker when fixing a defect; do not weaken the output assertion.
+
+## Approved testability hooks
+
+The DEBUG-only `RadioOutputTestHooks` barrier can hold the real initial radio rebuild after preparation. The cached-start scenario proves cache warm-up, callback capture and actual red artwork publication before releasing it. Identity-bound tickets reject stale release; reset cancels without running the continuation. The unarmed DEBUG path is unchanged and Release excludes the hook.
+
+The real CarPlay disconnect callback calls internal `CarPlaySceneDelegate.handleDisconnect()`. Policy tests use that same unchanged cleanup/restoration body. The connection seam models connectivity at the album-publishing boundary, not system scene construction. A separate real-playback check proves restoration from a genuinely published lyric, so an already-correct album cannot hide a broken handler.
+
+These hooks do not fix app artwork, album or stale-callback bugs.
+
+## Evidence limits
+
+Reset waits for its asynchronous image-cache completion and drains queued main callbacks. It cannot prove all unrelated global startup work finished; a dirty startup remains an ordinary error.
+
+Race checks prove old request start, new display identity, delayed response completion, client cache arrival and a post-completion hold. Polling does not intercept every transient write. Ad checks prove socket delivery during the hold, not receiver acknowledgement. Lyric tests bypass retrieval/sync timing but invoke the real publishing boundary.
+
+For the durable decision and rejected shortcuts, see [the CarPlay output test boundary ADR](../../../../../docs/ios/adr/0003-carplay-output-test-boundary.md).
+
+## Maintainer map
+
+| File/area | Purpose |
 |---|---|
-| A loopback radio stream with ICY titles (`FakeWorld/IcyStreamServer`), a tone as audio | `AVPlayer`, the audio session, playback pacing |
-| The KCRW tracklist and iTunes answers, served by a `URLProtocol` (`Guard/NetworkGuard`) | `RadioPlaybackStarter`, `PlaybackManager`, `RadioMetadataObserver` |
-| Artwork images from a loopback server (`FakeWorld/ArtworkServer`), one solid colour per song | `RadioTracklistService`, `TrackArtworkResolver`, Kingfisher |
-| | `NowPlayingHelper` and the system `MPNowPlayingInfoCenter` |
-
-Time is real. A title change costs about 5.7 s, and starting playback about 3.3 s.
-
-## Parts
-
-| Folder | What it does |
-|---|---|
-| `FakeWorld/` | `FakeWorld` is the one object a scenario scripts: `play(song)`, `setTracklist`, `setLatency`, `fail`, `dropStream`, `sendAdFrame`, `makeStation`. `make_tone.sh` regenerates the tone fixture. |
-| `Guard/` | `NetworkGuard` answers fixture hosts, **blocks and logs every other non-loopback host**, and drops delayed responses that outlive their world. |
-| `Probe/` | `NowPlayingProbe` reads the display: title, artist, album, live flag, media type, and the artwork's centre-pixel colour. `waitUntil` and `holds` poll the run loop and fail with the last snapshot and a diff. |
-| `Reset/` | `HarnessReset.fullReset()` clears process-wide state between scenarios. `HarnessScenarioCase` calls it around every test. |
-| `Gherkin/` | `FeatureRunner` turns `.feature` files into one XCTest per scenario. `NowPlayingSteps` are the iOS step definitions. |
-
-## Add a scenario
-
-1. Write it in `contracts/features/<area>/<name>.feature` (see `contracts/features/README.md`). Reuse existing step phrases.
-2. If you need a new phrase, add its definition to `NowPlayingSteps.register(in:)`, or to a new steps class.
-3. Add a `FeatureTestCase` subclass whose `featurePath` is `contractsFeature("<area>/<name>.feature")` and whose
-   `registerSteps` registers the steps. Each scenario appears as its own test, named `scenario_L<line>_<slug>`.
-4. Run one scenario: `make test_carplay CARPLAY_TESTS="NowPlayingSmokeTests/scenario_L12_the_first_song_shows_its_title_artist_album"`.
-
-## Rules the harness depends on
-
-- **Stream URLs must be loopback.** AVPlayer traffic bypasses the network guard. `FakeWorld.makeStation` rejects anything else.
-- **The test host is the app.** Never write real `UserDefaults.standard` keys from a test. Playback itself changes
-  `StatsListenedTo`, `lastPauseTime` and `lastPausedAt`. That is harmless on the dedicated simulator but real.
-- **Device runs are destructive.** `make test_carplay_device` runs against the phone's real install: every scenario
-  replaces the current episode and clears Up Next, and playback changes listening stats. The guard blocks the app's
-  account and favorites traffic (`api.pocketcasts.com`, `*.supabase.co`) so it is never sent; it is tolerated, not failed.
-- **Keep the Mac awake.** `make test_carplay` runs under `caffeinate -dimsu`. If macOS sleeps mid-run, playback fails
-  (`CoreMediaErrorDomain -66681`) and every title wait times out.
-- **One agent or person on the simulator at a time.**
-- **Pass `republishWidgetState: false`** when starting playback, or the run writes App Group widget state.
-- **Reset seams** are `#if DEBUG` blocks in `PlaybackManager`, `NowPlayingHelper`, `TrackArtworkResolver` and
-  `RadioTracklistService`. They are inert unless called. Keep them small: two of the files come from upstream.
-
-## What the harness cannot prove
-
-- HLS and AAC streams. The fake station is MP3 over ICY. KCRW's real stream is HLS.
-- CarPlay's own rendering, head-unit truncation, Bluetooth. The harness reads the record CarPlay draws from.
-- The full and mini players' own artwork code, lyrics, and ACR fingerprinting.
-- Signed-in behavior and account sync.
-- A run with Wi-Fi off. Nothing depends on the network, and the guard blocks leaks on `URLSession.shared` and
-  Kingfisher, but the offline run is a manual check.
+| `Gherkin/FeatureRunner.swift` | Parsing, registration, per-scenario XCTest discovery, step-scoped failures |
+| `Gherkin/KnownBugs.swift` | Platform-local exact known-bug tables |
+| `Gherkin/NowPlayingSteps*.swift` | Shared phrases, lifecycle, race and policy operations |
+| `FakeWorld/` | Scripted loopback input and request/delivery evidence |
+| `Guard/NetworkGuard.swift` | Guarded external services and fixture scope |
+| `Probe/` | System display snapshots and artwork comparisons |
+| `Reset/` | Opt-in base class and process-state reset |
+| `StationDetailHarness.swift` | Retained real controller lifecycle |
+| `LocalPodcastFixture.swift` | Synthetic local episode lifecycle |

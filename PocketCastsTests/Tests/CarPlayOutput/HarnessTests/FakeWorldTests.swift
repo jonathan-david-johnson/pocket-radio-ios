@@ -55,7 +55,8 @@ final class FakeWorldTests: XCTestCase {
         }
         withExtendedLifetime(resolver) {}
         XCTAssertEqual(url?.host, "127.0.0.1")
-        XCTAssertTrue(url?.absoluteString.hasSuffix("green-600x600bb.png") ?? false, "got \(String(describing: url))")
+        XCTAssertTrue(url?.path.hasSuffix("green-600x600bb.png") ?? false, "got \(String(describing: url))")
+        XCTAssertFalse(URLComponents(url: url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "song" })?.value?.isEmpty ?? true, "artwork URLs carry song identity")
     }
 
     func testITunesReturnsEmptyResultWhenNothingMatches() async throws {

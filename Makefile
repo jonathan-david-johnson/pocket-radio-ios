@@ -19,10 +19,13 @@ CARPLAY_SIM_UDID = $(shell xcrun simctl list devices | grep -F "$(CARPLAY_SIM_NA
 	| grep -oE '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}')
 CARPLAY_SIM_DEVICE_TYPE ?= com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro
 CARPLAY_SIM_RUNTIME ?= com.apple.CoreSimulator.SimRuntime.iOS-26-5
-# Harness self-tests plus the smoke scenario. Override with e.g. CARPLAY_TESTS="NowPlayingSmokeTests".
+# Harness self-tests plus all shared output scenarios. Override to select a class or scenario.
 CARPLAY_HARNESS_TESTS = IcyStreamServerTests FakeWorldTests NowPlayingProbeTests FeatureRunnerTests \
-	ResetTests NowPlayingSmokeTests NowPlayingSmokeFaultTests
-CARPLAY_TESTS ?= $(CARPLAY_HARNESS_TESTS)
+	ResetTests NowPlayingSmokeFaultTests ExpectedFailureTests NowPlayingStepsTests \
+	ArtworkFixtureQueryTests StationDetailHarnessTests WireAlbumStepsTests LifecycleStepsTests \
+	RaceFixtureTests PolicyStepsTests RadioOutputTestHooksTests ScenarioRegistrationTests KnownBugMappingTests
+CARPLAY_SCENARIO_TESTS = NowPlayingSmokeTests CarPlayArtworkTests CarPlayLifecycleTests CarPlayRaceTests CarPlayPolicyTests
+CARPLAY_TESTS ?= $(CARPLAY_HARNESS_TESTS) $(CARPLAY_SCENARIO_TESTS)
 # The disposable M13 experiments. Removed when the spike folder is deleted.
 CARPLAY_SPIKE_TESTS = CarPlayOutputSpikeE1Tests CarPlayOutputSpikeE2Tests CarPlayOutputSpikeE3Tests \
 	CarPlayOutputSpikeE4Tests CarPlayOutputSpikeE5Tests
@@ -131,7 +134,7 @@ carplay_sim: ## Create the dedicated CarPlay test simulator if it is missing
 # a plain `make test_staging` on a developer simulator skips them.
 # caffeinate: real playback uses the Mac's audio device. If the Mac sleeps mid-run, playback fails
 # (CoreMediaErrorDomain -66681) and every title wait times out.
-test_carplay: ## Run the CarPlay output harness self-tests and smoke scenario (dedicated simulator, keeps the Mac awake)
+test_carplay: ## Run CarPlay harness self-tests and output suite (dedicated simulator, keeps the Mac awake)
 	@test -n "$(CARPLAY_SIM_UDID)" || { echo "No '$(CARPLAY_SIM_NAME)' simulator. Run: make carplay_sim"; exit 1; }
 	@xcrun simctl bootstatus $(CARPLAY_SIM_UDID) -b >/dev/null 2>&1 || xcrun simctl boot $(CARPLAY_SIM_UDID)
 	TEST_RUNNER_CARPLAY_HARNESS=1 caffeinate -dimsu xcodebuild test -project podcasts.xcodeproj \

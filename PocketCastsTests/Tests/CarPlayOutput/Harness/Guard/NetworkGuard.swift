@@ -21,6 +21,8 @@ final class NetworkGuard: URLProtocol {
     private static var _records: [Record] = []
     private static var _fixtures: [String: (URLRequest) -> (Int, Data, String)] = [:]
     private static var _delays: [String: TimeInterval] = [:]
+    /// Request-level fixtures decline everything except their exact method/path/query contract.
+    private static var _requestFixtures: [(URLRequest) -> (Int, Data, String)?] = []
 
     private static var _installed = false
     /// Bumped on every install and uninstall. A delayed response that outlives its installation is
@@ -42,14 +44,15 @@ final class NetworkGuard: URLProtocol {
                 userInfo: [NSLocalizedDescriptionKey: "Harness blocked request to host \(host)"])
     }
 
-    static func install(fixtures: [String: (URLRequest) -> (Int, Data, String)], delays: [String: TimeInterval] = [:]) {
-        lock.lock(); _fixtures = fixtures; _delays = delays; _records = []; _callers = [:]; _installed = true; _generation += 1; lock.unlock()
+    static func install(fixtures: [String: (URLRequest) -> (Int, Data, String)], delays: [String: TimeInterval] = [:],
+                        requestFixtures: [(URLRequest) -> (Int, Data, String)?] = []) {
+        lock.lock(); _fixtures = fixtures; _requestFixtures = requestFixtures; _delays = delays; _records = []; _callers = [:]; _installed = true; _generation += 1; lock.unlock()
         URLProtocol.registerClass(NetworkGuard.self)
     }
 
     static func uninstall() {
         URLProtocol.unregisterClass(NetworkGuard.self)
-        lock.lock(); _fixtures = [:]; _delays = [:]; _installed = false; _generation += 1; lock.unlock()
+        lock.lock(); _fixtures = [:]; _requestFixtures = []; _delays = [:]; _installed = false; _generation += 1; lock.unlock()
     }
 
     private static func isLoopback(_ host: String?) -> Bool {
@@ -69,23 +72,34 @@ final class NetworkGuard: URLProtocol {
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
+    private let loadingLock = NSLock()
+    private var stopped = false
+
+    private var hasStopped: Bool {
+        loadingLock.lock(); defer { loadingLock.unlock() }
+        return stopped
+    }
+
     override func startLoading() {
         guard let url = request.url, let host = url.host?.lowercased() else { return }
         Self.lock.lock()
         let fixture = Self._fixtures[host]
+        let requestFixtures = Self._requestFixtures
         let delay = Self._delays[host] ?? 0
-        Self._records.append(Record(outcome: fixture == nil ? .blocked : .served, host: host, path: url.path,
+        let issuedIn = Self._generation
+        Self.lock.unlock()
+        let responseFixture = requestFixtures.lazy.compactMap { $0(self.request) }.first ?? fixture?(request)
+        Self.lock.lock()
+        Self._records.append(Record(outcome: responseFixture == nil ? .blocked : .served, host: host, path: url.path,
                                     userAgentProcess: ProcessInfo.processInfo.processName,
                                     caller: Self._callers[url.absoluteString]))
         Self.lock.unlock()
-        guard let fixture else {
+        guard let (status, body, type) = responseFixture else {
             client?.urlProtocol(self, didFailWithError: Self.blockedError(host: host))
             return
         }
-        let (status, body, type) = fixture(request)
-        let issuedIn = Self.generation
         let deliver = { [weak self] in
-            guard let self else { return }
+            guard let self, !self.hasStopped else { return }
             guard Self.generation == issuedIn else {
                 self.client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
                 return
@@ -93,13 +107,19 @@ final class NetworkGuard: URLProtocol {
             let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1",
                                            headerFields: ["Content-Type": type, "Content-Length": "\(body.count)"])!
             self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            guard !self.hasStopped else { return }
             self.client?.urlProtocol(self, didLoad: body)
+            guard !self.hasStopped else { return }
             self.client?.urlProtocolDidFinishLoading(self)
         }
-        if delay > 0 { DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: deliver) } else { deliver() }
+        // Keep fixture callbacks inside the harness's main-run-loop/autorelease-pool pump.
+        // A delayed callback must not deliver data after URLSession has cancelled its request.
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, delay), execute: deliver)
     }
 
-    override func stopLoading() {}
+    override func stopLoading() {
+        loadingLock.lock(); stopped = true; loadingLock.unlock()
+    }
 }
 
 extension NetworkGuard {

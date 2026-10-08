@@ -22,7 +22,7 @@ class CarPlaySceneDelegate: CustomObserver, CPTemplateApplicationSceneDelegate, 
     /// Whether a CarPlay interface controller is currently connected. Other
     /// components (e.g. `NowPlayingHelper`) read this to suppress
     /// CarPlay-inappropriate `MPNowPlayingInfoCenter` writes.
-    static private(set) var isConnected = false
+    private(set) static var isConnected = false
 
     /// Test-only seam — drives `isConnected` without a real CarPlay scene.
     static func setConnectedForTesting(_ value: Bool) {
@@ -48,6 +48,11 @@ class CarPlaySceneDelegate: CustomObserver, CPTemplateApplicationSceneDelegate, 
     }
 
     func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene, didDisconnectInterfaceController interfaceController: CPInterfaceController) {
+        handleDisconnect()
+    }
+
+    /// Shared with the output harness; the Apple callback uses this exact cleanup body.
+    func handleDisconnect() {
         FileLog.shared.addMessage("CarPlay: didDisconnect")
         removeAllCustomObservers()
         self.interfaceController?.delegate = nil

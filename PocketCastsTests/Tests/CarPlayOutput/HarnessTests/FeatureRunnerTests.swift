@@ -110,6 +110,20 @@ final class FeatureRunnerTests: XCTestCase {
         XCTAssertNil(FeatureExecution.run(scenario: scenario(["a", "b"]), steps: lib))
     }
 
+    func testUnmarkedClassifiedOutputFailureRemainsOrdinaryAndStopsRun() throws {
+        let lib = StepLibrary()
+        var reachedLater = false
+        lib.add("output") { _ in
+            throw StepFailure.outputAssertion(diagnostic: "synthetic policy mismatch", message: "actual display differs")
+        }
+        lib.add("after") { _ in reachedLater = true }
+        let failure = try XCTUnwrap(FeatureExecution.run(scenario: scenario(["output", "after"]), steps: lib))
+        XCTAssertEqual(failure.kind, .stepFailed)
+        XCTAssertEqual(failure.outputAssertionDiagnostic, "synthetic policy mismatch")
+        XCTAssertEqual(failure.errorText, "actual display differs")
+        XCTAssertFalse(reachedLater)
+    }
+
     func testUndefinedStepStopsRunAndNamesStepAndLocation() throws {
         let f = try parse("runner_undefined.feature")
         var ran: [String] = []
@@ -148,6 +162,7 @@ final class FeatureRunnerTests: XCTestCase {
         XCTAssertEqual(failure.kind, .stepFailed)
         XCTAssertEqual(failure.line, 7)
         XCTAssertEqual(failure.errorText, "boom!")
+        XCTAssertNil(failure.outputAssertionDiagnostic, "generic errors must never be classified as known output defects")
         XCTAssertEqual(failure.definitionLine, UInt(defLine))
         XCTAssertTrue(failure.definitionFile?.hasSuffix("FeatureRunnerTests.swift") == true, failure.definitionFile ?? "nil")
         XCTAssertTrue(failure.message.contains("boom!"))

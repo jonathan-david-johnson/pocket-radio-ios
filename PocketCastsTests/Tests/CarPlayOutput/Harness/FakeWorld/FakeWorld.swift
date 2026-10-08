@@ -39,6 +39,8 @@ final class FakeWorld {
 
     let icy: IcyStreamServer
     let artwork = ArtworkServer()
+    private(set) var otherIcy: IcyStreamServer?
+    let otherStationID = UUID().uuidString.lowercased()
 
     private let lock = NSLock()
     private var tracklist: [FakeSong] = []
@@ -46,27 +48,32 @@ final class FakeWorld {
     private var latencies: [Endpoint: TimeInterval] = [:]
     private var failures: [Endpoint: Int] = [:]
     private var knownSongs: [FakeSong] = []
+    private var servedITunesTerms: [String] = []
+    private var songArtworkURLs: [String: URL] = [:]
     private var started = false
     private var savedTimeout: TimeInterval?
 
     init(initial song: FakeSong? = nil) throws {
-        icy = try IcyStreamServer(initialTitle: song.map(Self.icyTitle) ?? "")
+        icy = try IcyStreamServer(initialTitle: song.map { Self.icyTitle($0) } ?? "")
         if let song { knownSongs = [song] }
     }
 
-    /// KCRW's unspaced shape: `Title-Artist-Album`.
-    static func icyTitle(_ song: FakeSong) -> String { "\(song.title)-\(song.artist)-\(song.album)" }
+    /// Album-bearing KCRW triple, or the parser's artist/title pair with no album.
+    static func icyTitle(_ song: FakeSong, includesAlbum: Bool = true) -> String {
+        includesAlbum ? "\(song.title)-\(song.artist)-\(song.album)" : "\(song.artist) - \(song.title)"
+    }
 
     // MARK: Lifecycle
 
     func start() throws {
         guard !started else { return }
+        lock.lock(); servedITunesTerms = []; lock.unlock()
         try icy.start()
         try artwork.start()
         NetworkGuard.install(fixtures: [
             Self.tracklistHost: { [weak self] req in self?.serveTracklist(req) ?? (503, Data(), "text/plain") },
             Self.itunesHost: { [weak self] req in self?.serveITunes(req) ?? (503, Data(), "text/plain") }
-        ])
+        ], requestFixtures: [{ [weak self] request in self?.serveLyricsIfMatched(request) }])
         applyDelays()
         NetworkGuard.attachToKingfisher()
         savedTimeout = KingfisherManager.shared.downloader.downloadTimeout
@@ -82,6 +89,8 @@ final class FakeWorld {
         if let savedTimeout { KingfisherManager.shared.downloader.downloadTimeout = savedTimeout }
         savedTimeout = nil
         icy.stop()
+        otherIcy?.stop()
+        otherIcy = nil
         artwork.stop()
     }
 
@@ -89,14 +98,42 @@ final class FakeWorld {
 
     // MARK: Scripting
 
-    func play(_ song: FakeSong) {
+    func play(_ song: FakeSong, includesAlbum: Bool = true) {
         lock.lock(); knownSongs.append(song); lock.unlock()
-        icy.setTitle(Self.icyTitle(song))
+        icy.setTitle(Self.icyTitle(song, includesAlbum: includesAlbum))
     }
 
     /// First entry is the most recent. `includeBreakRow` adds a `[BREAK]` row on top.
     func setTracklist(_ entries: [FakeSong], includeBreakRow: Bool = false) {
         lock.lock(); tracklist = entries; includeBreak = includeBreakRow; knownSongs.append(contentsOf: entries); lock.unlock()
+    }
+
+    /// Current tracklist fixture for focused harness self-tests.
+    var configuredTracklist: [FakeSong] {
+        lock.lock(); defer { lock.unlock() }
+        return tracklist
+    }
+
+    /// Adds a row to the current fixture without replacing earlier rows.
+    func appendTracklist(_ entry: FakeSong) {
+        lock.lock(); tracklist.append(entry); knownSongs.append(entry); lock.unlock()
+    }
+
+    /// Configures (or replaces) the iTunes artwork result for the matching song.
+    func setITunesArtwork(_ colour: String?, for title: String, artist: String) {
+        lock.lock()
+        if let index = knownSongs.lastIndex(where: { $0.title == title && $0.artist == artist }) {
+            knownSongs[index].itunesArt = colour
+        } else {
+            knownSongs.append(FakeSong(title: title, artist: artist, itunesArt: colour))
+        }
+        lock.unlock()
+    }
+
+    func wasITunesLookupServed(for title: String, artist: String) -> Bool {
+        let expected = "\(artist) \(title)".trimmingCharacters(in: .whitespaces).lowercased()
+        lock.lock(); defer { lock.unlock() }
+        return servedITunesTerms.contains(expected)
     }
 
     func setLatency(_ endpoint: Endpoint, seconds: TimeInterval) {
@@ -130,11 +167,43 @@ final class FakeWorld {
                      tracklistUrl: String? = FakeWorld.kcrwTracklistURL,
                      logoAsset: String? = "kcrw_logo") throws -> RadioStation {
         let stream = streamUrl ?? self.streamURL
-        guard Self.isLoopback(URL(string: stream)?.host) else {
+        guard Self.isLoopbackURL(stream) else {
             throw WorldError(description: "FakeWorld refuses non-loopback stream URL '\(stream)': AVPlayer traffic bypasses NetworkGuard, so only 127.0.0.1/localhost/::1 is allowed")
         }
         return RadioStation(stationId: "6238f5e8-a9ee-4c88-9713-2d1ab4112ac9", name: name, streamUrl: stream,
                             tracklistUrl: tracklistUrl, logoAsset: logoAsset)
+    }
+
+    /// Exactly one world owns the process-wide guard, including both independent ICY servers.
+    func makeOtherStation() throws -> RadioStation {
+        guard started else { throw WorldError(description: "second station requires the guarded world to be started") }
+        if otherIcy == nil {
+            let server = try IcyStreamServer(initialTitle: "")
+            try server.start()
+            otherIcy = server
+            HarnessReset.track(stationId: otherStationID)
+        }
+        return RadioStation(stationId: otherStationID, name: "Other Local Station",
+                            streamUrl: "http://127.0.0.1:\(otherIcy!.port)/stream", tracklistUrl: nil, logoAsset: "kcrw_logo")
+    }
+
+    static func isLoopbackURL(_ value: String) -> Bool {
+        guard let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              url.user == nil, url.password == nil, isLoopback(url.host) else { return false }
+        return true
+    }
+
+    /// The URL actually supplied in the tracklist, queried by exact song identity, not colour/path.
+    func artworkURL(for title: String, artist: String) -> URL? {
+        lock.lock(); defer { lock.unlock() }
+        return songArtworkURLs["\(title)\u{1F}\(artist)"]
+    }
+
+    func artworkEvents(for title: String, artist: String) -> [ArtworkServer.Event] {
+        guard let url = artworkURL(for: title, artist: artist),
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return [] }
+        let target = parts.percentEncodedPath + (parts.percentEncodedQuery.map { "?" + $0 } ?? "")
+        return artwork.events.filter { $0.target == target }
     }
 
     // MARK: Inspection
@@ -183,10 +252,11 @@ final class FakeWorld {
         NetworkGuard.setDelay(host: Self.itunesHost, seconds: i)
     }
 
-    private func artURL(_ colour: String, suffix: String, delay: TimeInterval = 0) -> String {
-        var s = "http://127.0.0.1:\(artwork.port)/art/\(colour)-\(suffix).png"
-        if delay > 0 { s += "?delay=\(delay)" }
-        return s
+    private func artURL(_ colour: String, suffix: String, identity: String = "fixture", delay: TimeInterval = 0) -> String {
+        var parts = URLComponents(string: "http://127.0.0.1:\(artwork.port)/art/\(colour)-\(suffix).png")!
+        parts.queryItems = [URLQueryItem(name: "song", value: identity)]
+        if delay > 0 { parts.queryItems?.append(URLQueryItem(name: "delay", value: "\(delay)")) }
+        return parts.url!.absoluteString
     }
 
     private func serveTracklist(_ request: URLRequest) -> (Int, Data, String) {
@@ -201,23 +271,47 @@ final class FakeWorld {
                          "albumImageLarge": NSNull(), "datetime": iso.string(from: Self.playedAt(index: 0))])
         }
         for (i, s) in songs.enumerated() {
+            let identity = "\(s.title)\u{1F}\(s.artist)"
+            let url = s.art.map { artURL($0, suffix: "large", identity: identity, delay: s.artDelay) }
+            lock.lock(); songArtworkURLs[identity] = url.flatMap(URL.init(string:)); lock.unlock()
             rows.append(["title": s.title, "artist": s.artist, "album": s.album, "albumImage": NSNull(),
-                         "albumImageLarge": s.art.map { artURL($0, suffix: "large", delay: s.artDelay) } ?? NSNull(),
+                         "albumImageLarge": url ?? NSNull(),
                          "datetime": iso.string(from: Self.playedAt(index: i + (withBreak ? 1 : 0)))])
         }
         let data = (try? JSONSerialization.data(withJSONObject: rows)) ?? Data("[]".utf8)
         return (200, data, "application/json")
     }
 
+    /// The real detail controller may ask for lyrics, but only these scripted songs and exact
+    /// read endpoints are fixtures. Unknown songs, paths and methods still fail the guard.
+    private func serveLyricsIfMatched(_ request: URLRequest) -> (Int, Data, String)? {
+        guard request.httpMethod == "GET", let url = request.url, url.host == "lrclib.net",
+              ["/api/get", "/api/search"].contains(url.path),
+              let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return nil }
+        let allowed = url.path == "/api/get" ? ["artist_name", "track_name", "album_name"] : ["artist_name", "track_name"]
+        guard query.allSatisfy({ allowed.contains($0.name) }), Set(query.map(\.name)).count == query.count else { return nil }
+        let title = query.first { $0.name == "track_name" }?.value
+        let artist = query.first { $0.name == "artist_name" }?.value
+        let album = query.first { $0.name == "album_name" }?.value
+        lock.lock(); let songs = knownSongs; lock.unlock()
+        guard songs.contains(where: { $0.artist == artist && LyricsService.sanitize($0.title) == title &&
+            (album == nil || LyricsService.sanitize($0.album) == album) }) else { return nil }
+        return url.path == "/api/get" ? (404, Data("{}".utf8), "application/json") : (200, Data("[]".utf8), "application/json")
+    }
+
     private func serveITunes(_ request: URLRequest) -> (Int, Data, String) {
-        lock.lock(); let status = failures[.itunes]; let songs = knownSongs; lock.unlock()
-        if let status { return (status, Data("{}".utf8), "application/json") }
         let term = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?
             .queryItems?.first { $0.name == "term" }?.value?.lowercased() ?? ""
-        let hit = songs.first { $0.itunesArt != nil && term.contains($0.artist.lowercased()) && term.contains($0.title.lowercased()) }
+        lock.lock()
+        let status = failures[.itunes], songs = knownSongs
+        if request.url?.path == "/search", request.httpMethod == "GET", status == nil { servedITunesTerms.append(term) }
+        lock.unlock()
+        if let status { return (status, Data("{}".utf8), "application/json") }
+        // Prefer the most recently configured matching song, so an updated fixture wins over stale history.
+        let hit = songs.reversed().first { $0.itunesArt != nil && term == "\($0.artist) \($0.title)".trimmingCharacters(in: .whitespaces).lowercased() }
         let body: String
-        if let colour = hit?.itunesArt {
-            body = #"{"resultCount":1,"results":[{"artworkUrl100":"\#(artURL(colour, suffix: "100x100bb"))"}]}"#
+        if let hit, let colour = hit.itunesArt {
+            body = #"{"resultCount":1,"results":[{"artworkUrl100":"\#(artURL(colour, suffix: "100x100bb", identity: "itunes-\(hit.title)-\(hit.artist)"))"}]}"#
         } else {
             body = #"{"resultCount":0,"results":[]}"#
         }

@@ -24,6 +24,9 @@ class HarnessScenarioCase: XCTestCase {
         try super.setUpWithError()
         try XCTSkipUnless(HarnessReset.isEnabled, HarnessReset.skipMessage)
         HarnessReset.fullReset()
+        guard HarnessReset.isClean else {
+            throw StepFailure(message: "scenario setup reset is not quiescent: \(HarnessReset.stateSummary())")
+        }
     }
 
     override func tearDown() {

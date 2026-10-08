@@ -24,6 +24,7 @@ final class IcyStreamServer {
     private var nextConnectionId = 1
     private var _sent: [SentTitle] = []
     private var _requests: [String] = []
+    private var _deliveredAds: [SentTitle] = []
     private(set) var port: UInt16 = 0
 
     init(initialTitle: String) throws {
@@ -36,6 +37,8 @@ final class IcyStreamServer {
 
     var sent: [SentTitle] { queue.sync { _sent } }
     var requests: [String] { queue.sync { _requests } }
+    /// Successful socket-send completions, not merely scheduled ad injections.
+    var deliveredAds: [SentTitle] { queue.sync { _deliveredAds } }
     var connectionCount: Int { queue.sync { nextConnectionId - 1 } }
 
     func setTitle(_ newTitle: String) {
@@ -142,9 +145,11 @@ final class IcyStreamServer {
                 c.toneOffset = (c.toneOffset + 1) % tone.count
             }
             c.audioSent += Self.metaInt
+            var containsAd = false
             if c.wantsMeta {
                 if c.pendingAd {
                     c.pendingAd = false
+                    containsAd = true
                     let payload = Data("StreamTitle='\(Self.adTitle)';".utf8)
                     let padded = (payload.count + 15) / 16
                     block.append(UInt8(padded))
@@ -162,8 +167,14 @@ final class IcyStreamServer {
                     block.append(0)
                 }
             }
-            c.nw.send(content: block, completion: .contentProcessed { [weak c] error in
-                if error != nil { c?.cancel() }
+            let sentAd = containsAd
+            c.nw.send(content: block, completion: .contentProcessed { [weak self, weak c] error in
+                if error != nil {
+                    c?.cancel()
+                } else if sentAd, let self, let c {
+                    self._deliveredAds.append(SentTitle(title: Self.adTitle, connection: c.id,
+                                                       uptime: ProcessInfo.processInfo.systemUptime))
+                }
             })
         }
     }

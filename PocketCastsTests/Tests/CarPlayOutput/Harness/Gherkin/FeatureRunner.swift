@@ -114,7 +114,21 @@ final class StepLibrary {
 
 struct StepFailure: Error, CustomStringConvertible {
     let message: String
+    /// nil is an ordinary harness/precondition error, including all existing StepFailure(message:) calls.
+    let outputAssertionDiagnostic: String?
     var description: String { message }
+
+    private init(message: String, outputAssertionDiagnostic: String?) {
+        self.message = message
+        self.outputAssertionDiagnostic = outputAssertionDiagnostic
+    }
+
+    init(message: String) { self.init(message: message, outputAssertionDiagnostic: nil) }
+
+    /// Opt in only at the final output comparison, after readiness/network/precondition checks succeed.
+    static func outputAssertion(diagnostic: String, message: String) -> StepFailure {
+        StepFailure(message: message, outputAssertionDiagnostic: diagnostic)
+    }
 }
 
 /// Outcome of a failed scenario. Pure data: no XCTest types.
@@ -128,6 +142,7 @@ struct FeatureFailure {
     var definitionFile: String?
     var definitionLine: UInt?
     var errorText: String?
+    var outputAssertionDiagnostic: String?
     var ambiguousWith: [String] = []   // "file:line" of every matching definition
 
     var message: String {
@@ -147,25 +162,31 @@ enum FeatureExecution {
     /// Runs the steps in order and stops at the first failure.
     static func run(scenario: FeatureScenario, steps: StepLibrary) -> FeatureFailure? {
         for step in scenario.steps {
-            func failure(_ kind: FeatureFailure.Kind) -> FeatureFailure {
-                FeatureFailure(kind: kind, keyword: step.keyword, stepText: step.text, featurePath: scenario.featurePath, line: step.line)
-            }
-            let found = steps.matches(step.text)
-            guard let (definition, captures) = found.first else { return failure(.undefinedStep) }
-            if found.count > 1 {
-                var f = failure(.ambiguousStep)
-                f.ambiguousWith = found.map { "\($0.0.file):\($0.0.line)" }
-                return f
-            }
-            do {
-                try definition.handler(captures)
-            } catch {
-                var f = failure(.stepFailed)
-                f.definitionFile = definition.file
-                f.definitionLine = definition.line
-                f.errorText = "\(error)"
-                return f
-            }
+            if let failure = run(step: step, scenario: scenario, steps: steps) { return failure }
+        }
+        return nil
+    }
+
+    static func run(step: FeatureStep, scenario: FeatureScenario, steps: StepLibrary) -> FeatureFailure? {
+        func failure(_ kind: FeatureFailure.Kind) -> FeatureFailure {
+            FeatureFailure(kind: kind, keyword: step.keyword, stepText: step.text, featurePath: scenario.featurePath, line: step.line)
+        }
+        let found = steps.matches(step.text)
+        guard let (definition, captures) = found.first else { return failure(.undefinedStep) }
+        if found.count > 1 {
+            var f = failure(.ambiguousStep)
+            f.ambiguousWith = found.map { "\($0.0.file):\($0.0.line)" }
+            return f
+        }
+        do {
+            try definition.handler(captures)
+        } catch {
+            var f = failure(.stepFailed)
+            f.definitionFile = definition.file
+            f.definitionLine = definition.line
+            f.errorText = "\(error)"
+            f.outputAssertionDiagnostic = (error as? StepFailure)?.outputAssertionDiagnostic
+            return f
         }
         return nil
     }
@@ -176,6 +197,7 @@ enum FeatureExecution {
 /// so `-only-testing:` and the `.xcresult` see each scenario individually.
 class FeatureTestCase: HarnessScenarioCase {
     class var featurePath: String { fatalError("subclass must supply featurePath") }
+    class var knownBugs: KnownBugs.Table { [:] }
 
     /// Fixture classes exist only to be run explicitly by a self-test. They are left out of normal discovery
     /// unless `allowFixtureSuites` is set around the explicit call.
@@ -214,6 +236,7 @@ class FeatureTestCase: HarnessScenarioCase {
         do {
             let feature = try FeatureParser.parse(path: path)
             if feature.scenarios.isEmpty { throw StepFailure(message: "no scenarios found") }
+            try KnownBugs.validate(knownBugs, in: feature)
             names = feature.scenarios.map { scenario in (testMethodName(for: scenario), { $0.execute(scenario) }) }
         } catch {
             names = [("scenario_feature_file_unreadable", { test in
@@ -229,18 +252,58 @@ class FeatureTestCase: HarnessScenarioCase {
         return suite
     }
 
-    fileprivate func reportFailure(_ message: String, path: String, line: Int) {
+    private func failureIssue(_ message: String, path: String, line: Int) -> XCTIssue {
         let location = XCTSourceCodeLocation(filePath: path, lineNumber: line)
-        report(XCTIssue(type: .assertionFailure, compactDescription: message,
-                        sourceCodeContext: XCTSourceCodeContext(location: location)))
+        return XCTIssue(type: .assertionFailure, compactDescription: message,
+                        sourceCodeContext: XCTSourceCodeContext(location: location))
+    }
+
+    fileprivate func reportFailure(_ message: String, path: String, line: Int) {
+        report(failureIssue(message, path: path, line: line))
     }
 
     func execute(_ scenario: FeatureScenario) {
         currentScenario = scenario
+        let table = type(of: self).knownBugs
+        // Also validate explicit execute calls, not just dynamic suite discovery.
+        if !table.isEmpty {
+            do {
+                try KnownBugs.validate(table, in: FeatureParser.parse(path: type(of: self).featurePath))
+            } catch {
+                reportFailure("Cannot validate known-bugs table: \(error)", path: scenario.featurePath, line: scenario.line)
+                return
+            }
+        }
         let registry = StepLibrary()
         registerSteps(registry)
-        if let failure = FeatureExecution.run(scenario: scenario, steps: registry) {
-            reportFailure(failure.message, path: failure.featurePath, line: failure.line)
+        let entries = table[scenario.name] ?? []
+        for step in scenario.steps {
+            // Execute outside XCTExpectFailure: direct assertions, asynchronous network issues, and all
+            // preconditions remain ordinary. Only the classified output issue is recorded inside its block.
+            let failure = FeatureExecution.run(step: step, scenario: scenario, steps: registry)
+            guard let entry = entries.first(where: { step.keyword == "Then" && $0.stepText == step.text }),
+                  failure.map(entry.matches) ?? true else {
+                if let failure {
+                    reportFailure(failure.message, path: failure.featurePath, line: failure.line)
+                    return
+                }
+                continue
+            }
+            let issue = failure.map { failureIssue($0.message, path: $0.featurePath, line: $0.line) }
+            let options = XCTExpectedFailure.Options()
+            options.isStrict = true
+            options.issueMatcher = { candidate in
+                guard let issue else { return false }
+                return candidate.type == .assertionFailure && candidate.compactDescription == issue.compactDescription
+                    && candidate.sourceCodeContext.location == issue.sourceCodeContext.location
+            }
+            let definition = registry.match(step.text)?.0
+            let reason = "\(entry.reason)\n  \(step.keyword) \(step.text) (\(scenario.featurePath):\(step.line))"
+                + "\n  (step definition: \(definition?.file ?? "?"):\(definition?.line ?? 0))"
+            XCTExpectFailure(reason, options: options) {
+                if let issue { self.report(issue) }
+            }
+            // A matched defect (or a strict unexpected pass) never hides later ordinary assertions.
         }
     }
 }

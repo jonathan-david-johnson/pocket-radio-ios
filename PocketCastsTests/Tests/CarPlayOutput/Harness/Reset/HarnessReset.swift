@@ -22,6 +22,7 @@ enum HarnessReset {
     static func track(stationId: String) { trackedStationIds.insert(stationId) }
 
     static func fullReset() {
+        RadioOutputTestHooks.shared.cancel()
         let pm = PlaybackManager.shared
         pm.pause()
         pm.endPlayback(saveCurrentEpisode: false)
@@ -39,7 +40,19 @@ enum HarnessReset {
         while !cleared, ProcessInfo.processInfo.systemUptime < deadline {
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
         }
+        XCTAssertTrue(cleared, "radio artwork disk cache reset timed out")
         CarPlaySceneDelegate.setConnectedForTesting(false)
+        // Drain callbacks already queued by teardown/cache I/O. Do not erase a late
+        // restored dictionary: it is an ordinary reset failure, not an output defect.
+        var drained = false
+        DispatchQueue.main.async { drained = true }
+        let drainDeadline = ProcessInfo.processInfo.systemUptime + 5
+        while !drained, ProcessInfo.processInfo.systemUptime < drainDeadline {
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+        }
+        XCTAssertTrue(drained, "reset main-queue fence timed out")
+        XCTAssertTrue(isClean, "reset failed after callback drain: \(stateSummary())")
+        print("[M13.2 reset] \(stateSummary())")
     }
 
     /// Each entry is a field name and its value; `dirty` is true when the value differs from a fresh launch.
@@ -61,7 +74,8 @@ enum HarnessReset {
             ("artworkResolverCurrentKey", resolverKey ?? "nil", resolverKey != nil),
             ("radioTrackStationId", trackStation ?? "nil", trackStation != nil),
             ("nowPlayingInfo", info == nil ? "nil" : NowPlayingProbe.snapshot().description, info != nil),
-            ("carPlayConnected", "\(connected)", connected)
+            ("carPlayConnected", "\(connected)", connected),
+            ("startupBarrier", RadioOutputTestHooks.shared.isIdle ? "idle" : "armed/pending", !RadioOutputTestHooks.shared.isIdle)
         ]
     }
 

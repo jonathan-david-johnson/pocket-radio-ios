@@ -1402,6 +1402,15 @@ class PlaybackManager: ServerPlaybackDelegate {
         // make sure we load the saved speed for this track
         player?.setPlaybackRate(effects().playbackSpeed)
 
+        #if DEBUG && !os(watchOS) && !APPCLIP && !os(tvOS)
+        if let station = liveStation(for: nil),
+           RadioOutputTestHooks.shared.capture(stationID: station.uuid, continuation: { [weak self] in
+               guard let self, self.currentEpisode?.uuid == station.uuid else { return }
+               self.updateAllNowPlayingData()
+           }) {
+            return
+        }
+        #endif
         updateAllNowPlayingData()
     }
 
