@@ -65,7 +65,7 @@ Xcode 27 on this Mac provides **Device Hub**, not the legacy `Simulator.app`. `m
 
    If shutdown reports that the device is already shut down, proceed to boot. Verify Home input again before opening CarPlay. This recovery worked on this Mac; it does not establish which frontend caused the input failure.
 
-4. Launch the installed **PocketRadio** app normally from Home. If it is not installed, locate the app built in step 1 and install it:
+4. Always install the app built in step 1 before collecting new evidence; `build_sim` does not update an existing installation. Locate that app, install it, and launch normally:
 
    ```sh
    APP_PATH=$(xcodebuild -project podcasts.xcodeproj \
@@ -122,17 +122,37 @@ These hooks do not fix app artwork, album or stale-callback bugs.
 
 ## Evidence limits
 
+The original 43-test harness checkpoint was accepted after two clean physical-device runs on 2026-10-07, replacing the rejected Wi-Fi-off check. Those runs do not validate the expanded 128-test suite on device or prove offline operation. On the signed-in phone, the guard blocked observed favorites-sync and Up Next-sync requests; device mode tolerated those blocked requests. Whether a later ordinary app sync restored the cleared local Up Next was not checked. Do not infer that every network stack or later sync is covered.
+
+Template button state was readable without constructing a CarPlay scene in the initial experiment. Favourite/mute output-suite coverage remains deferred; pure button tests are not full scene-lifecycle verification.
+
 Reset waits for its asynchronous image-cache completion and drains queued main callbacks. It cannot prove all unrelated global startup work finished; a dirty startup remains an ordinary error.
 
 Race checks prove old request start, new display identity, delayed response completion, client cache arrival and a post-completion hold. Polling does not intercept every transient write. Ad checks prove socket delivery during the hold, not receiver acknowledgement. Lyric tests bypass retrieval/sync timing but invoke the real publishing boundary.
 
 For the durable decision and rejected shortcuts, see [the CarPlay output test boundary ADR](../../../../../docs/ios/adr/0003-carplay-output-test-boundary.md).
 
+## Harness coverage map
+
+| Behavior | Maintained test |
+|---|---|
+| ICY block offsets and title changes | `IcyStreamServerTests.testIcyFramingAndTitleChange` |
+| Fake tracklist and real parser agree | `FakeWorldTests.testTracklistContractParsesScriptedEntriesAndSkipsBreak` |
+| Tracklist/iTunes requests reach fixtures | `FakeWorldTests.testTracklistAndITunesRequestsAreServedByTheFake` |
+| Unexpected guarded hosts are blocked | `FakeWorldTests.testUnknownHostIsBlockedFromURLSessionAndKingfisher` |
+| Scenario order does not contaminate output | `ResetTests.test_orderIndependence_XY_YX_XX_YY` |
+| Artwork color and absence readback | `NowPlayingProbeTests.testArtworkColoursReadBack`, `testNoArtworkIsNil` |
+| Timeout includes the last snapshot and diff | `NowPlayingProbeTests.testWaitUntilTimesOutWithLastSnapshotAndDiff` |
+| Real-playback smoke contract | `NowPlayingSmokeTests`, loading `smoke.feature` |
+| Undefined steps report their feature location | `FeatureRunnerTests.testUndefinedStepEndToEndReportsAtFeatureLine` |
+
+The five scenario classes listed above retain the output contracts. `ExpectedFailureTests` and `KnownBugMappingTests` check strict failure classification and exact mappings; `ScenarioRegistrationTests` checks individual discovery. Manual rendering and scene-connectivity verification remain separate.
+
 ## Maintainer map
 
 | File/area | Purpose |
 |---|---|
-| `Gherkin/FeatureRunner.swift` | Parsing, registration, per-scenario XCTest discovery, step-scoped failures |
+| `Gherkin/FeatureRunner.swift` | Parsing, runtime Objective-C registration, per-scenario XCTest discovery, step-scoped failures. Recheck discovery and single-scenario selection after XCTest/Xcode upgrades. |
 | `Gherkin/KnownBugs.swift` | Platform-local exact known-bug tables |
 | `Gherkin/NowPlayingSteps*.swift` | Shared phrases, lifecycle, race and policy operations |
 | `FakeWorld/` | Scripted loopback input and request/delivery evidence |
