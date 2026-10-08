@@ -4,7 +4,7 @@ This is **PocketRadio**, a personal fork of `Automattic/pocket-casts-ios` mainta
 
 Milestone planning documents live at `../docs/ios/current_milestone.md` and `../docs/ios/milestones/milestone_N.md`. Always check `../docs/ios/current_milestone.md` when picking up work — it is the source of truth for the active task.
 
-**Symlink convention:** `../docs/ios/current_milestone.md` is always a symlink to the active milestone file (e.g. `milestones/milestone_8.md`). To start a new milestone, create `milestones/milestone_N.M.md` and repoint the symlink — do NOT write the new plan through `current_milestone.md`, that overwrites the previous milestone's archive. Use `/new-milestone <N>` to do this safely.
+**Symlink convention:** `../docs/ios/current_milestone.md` is always a symlink to the active milestone file (e.g. `milestones/milestone_8.md`). To start a new milestone, create `milestones/milestone_N.M.md` and repoint the symlink — do NOT write the new plan through `current_milestone.md`, that overwrites the milestone it points at. Use the shell's `new-milestone` skill to do this safely, and `close-milestone` to close one. Both live in the shell's `.agents/skills/`, so start that session in the shell checkout; they aren't visible from inside this repo. Code here cites ADRs, never milestone, experiment, or bug docs. The pre-commit hook blocks new citations.
 
 **`CLAUDE.md` convention:** `CLAUDE.md` is a plain file containing the single line `@AGENTS.md` — never more. Put all real content here in `AGENTS.md`.
 
