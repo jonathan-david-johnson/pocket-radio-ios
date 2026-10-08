@@ -33,6 +33,59 @@ The 15 shared scenarios each appear as their own XCTest result. Their generated 
 
 Keep the laptop lid open. Caffeinate does not prevent clamshell sleep. Restart the dedicated simulator after host sleep or stalled playback, and check power logs before accepting timing results.
 
+## Manual CarPlay check on this Mac
+
+Use the normal app, without harness enablement, on the same signed-out simulator. Manual playback does not replace the automated publication checks. Leave Wi-Fi unchanged; disabling it is not an acceptance requirement.
+
+Xcode 27 on this Mac provides **Device Hub**, not the legacy `Simulator.app`. `make run_sim` still fails at its `open -a Simulator` step even when the build succeeds. Use the Simulator included in the separately downloaded Xcode 26.5 at `~/Downloads/Xcode.app`. Do not change the active `xcode-select` setting.
+
+1. From the iOS checkout, build the normal app with the active toolchain:
+
+   ```sh
+   SIM_UDID=6565636E-BB8D-4C34-A9EB-56F2BB638400
+   make build_sim SIM_UDID="$SIM_UDID"
+   ```
+
+2. Quit Device Hub. If it asks, choose **Quit and Keep Simulators Running**. Open the legacy Simulator with its own developer directory:
+
+   ```sh
+   open --env "DEVELOPER_DIR=$HOME/Downloads/Xcode.app/Contents/Developer" \
+     "$HOME/Downloads/Xcode.app/Contents/Developer/Applications/Simulator.app" \
+     --args -CurrentDeviceUDID "$SIM_UDID"
+   ```
+
+3. Verify that Home and taps work. If input is unresponsive, quitting Device Hub alone is not enough: quit the legacy Simulator, restart only the dedicated device, and reopen the GUI with the command above. Do not erase it or shut down unrelated simulators.
+
+   ```sh
+   DEVELOPER_DIR="$HOME/Downloads/Xcode.app/Contents/Developer" \
+     xcrun simctl shutdown "$SIM_UDID"
+   DEVELOPER_DIR="$HOME/Downloads/Xcode.app/Contents/Developer" \
+     xcrun simctl bootstatus "$SIM_UDID" -b
+   ```
+
+   If shutdown reports that the device is already shut down, proceed to boot. Verify Home input again before opening CarPlay. This recovery worked on this Mac; it does not establish which frontend caused the input failure.
+
+4. Launch the installed **PocketRadio** app normally from Home. If it is not installed, locate the app built in step 1 and install it:
+
+   ```sh
+   APP_PATH=$(xcodebuild -project podcasts.xcodeproj \
+     -scheme 'Pocket Casts Staging' -configuration StagingDebug \
+     -destination "platform=iOS Simulator,id=$SIM_UDID" \
+     -showBuildSettings -json 2>/dev/null | python3 -c '
+   import json, sys
+   settings = next(t["buildSettings"] for t in json.load(sys.stdin) if t["target"] == "podcasts")
+   print(settings["TARGET_BUILD_DIR"] + "/" + settings["FULL_PRODUCT_NAME"])
+   ')
+   xcrun simctl install "$SIM_UDID" "$APP_PATH"
+   xcrun simctl launch "$SIM_UDID" com.jdj.pocketradio
+   ```
+
+   Do not set `CARPLAY_HARNESS`, `TEST_RUNNER_CARPLAY_HARNESS`, or their `SIMCTL_CHILD_` variants for this launch.
+
+5. In the legacy Simulator, choose **I/O → External Displays → CarPlay**. Verify Home input still works, play KCRW Eclectic 24, and observe at least three song transitions. Compare audible transitions, phone title/artwork, CarPlay title/artist/third line, LIVE, and transport controls. Record discrepancies rather than treating the manual run as an all-policy pass. This simulator may show artwork-derived gradients without a visible cover; exact published artwork must still be checked through the Now Playing probe.
+
+Stop real-radio playback before the next destructive harness run. Keep lyric timing and retrieval investigation separate from CarPlay publication policy.
+
 ## What runs
 
 - AVPlayer consumes loopback MP3 with scriptable ICY metadata. No playback mock or scenario-time metadata injection.
