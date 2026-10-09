@@ -35,6 +35,8 @@ let package = Package(
         )
     ],
     dependencies: [
+        // PocketRadio: shared stream-alignment core, owned by the menubar repo. Path is relative to Modules/.
+        .package(path: "../../pocket-radio-menubar/Packages/StreamSession"),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "510.0.0"),
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
         .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.0.0"),
@@ -224,6 +226,7 @@ enum XcodeSupport {
                     .product(name: "WrappingHStack", package: "WrappingHStack"),
                     .product(name: "Fingerprint", package: "pocket-casts-ios-fingerprint"),
                     .product(name: "Supabase", package: "supabase-swift"),
+                    .product(name: "StreamSession", package: "StreamSession"),
                     "EndOfYear",
                 ]
             ),

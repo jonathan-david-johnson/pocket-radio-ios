@@ -51,6 +51,7 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
 
     #if !os(watchOS) && !APPCLIP && !os(tvOS)
     private var radioMetadataObserver: RadioMetadataObserver?
+    private var alignmentSession: RadioPlaybackSession?
     #endif
 
     private var episodeUuid: String?
@@ -92,6 +93,11 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
     }
 
     func loadEpisode(_ episode: BaseEpisode) {
+        #if !os(watchOS) && !APPCLIP && !os(tvOS)
+        RadioPlaybackSession.stopOnMain(alignmentSession)
+        alignmentSession = nil
+        #endif
+
         if player != nil {
             cleanupPlayer()
             player = nil
@@ -131,6 +137,12 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
             radioMetadataObserver = observer
         } else {
             radioMetadataObserver = nil
+        }
+
+        // Debug Observe only: monitor the measured endpoint. Publishes nothing.
+        if KCRWAlignmentConfiguration.endpointOverride(for: episode, observeOn: ObserveSwitchStore.shared.isObserveOn) != nil,
+           let player {
+            alignmentSession = RadioPlaybackSession.startOnMain(player: player, item: playerItem, endpoint: KCRWAlignmentConfiguration.measuredEndpoint)
         }
         #endif
 
@@ -296,6 +308,11 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
 
     func endPlayback(permanent: Bool) {
         shouldKeepPlaying = false
+        #if !os(watchOS) && !APPCLIP && !os(tvOS)
+        // Before the pause below, so teardown is not judged as the listener stopping audio.
+        RadioPlaybackSession.stopOnMain(alignmentSession)
+        alignmentSession = nil
+        #endif
         if playing() {
             player?.pause()
         }

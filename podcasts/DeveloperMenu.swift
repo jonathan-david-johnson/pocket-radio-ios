@@ -344,6 +344,12 @@ struct DeveloperMenu: View {
                 Text("Cancel Subscription Survey")
             }
 
+            #if DEBUG && !os(watchOS) && !APPCLIP && !os(tvOS)
+            Section {
+                NavigationLink("KCRW alignment (Observe)") { AlignmentObserveView() }
+            }
+            #endif
+
             Section {
                 NavigationLink("Debug Info") {
                     SurveyDebugInfoView()
