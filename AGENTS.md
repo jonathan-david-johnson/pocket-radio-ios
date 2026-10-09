@@ -28,6 +28,12 @@ On the pinned physical device ("Jonathan iPhone", UDID
 - `make build_device` — build StagingDebug for that device
 - `make run_device` — build, install, and launch on it
 - `xcrun devicectl list devices` to confirm it is paired and available
+- Launch with Debug launch arguments (each sets a `UserDefaults.standard` key for that launch only):
+  `xcrun devicectl device process launch --device <id> --terminate-existing com.jdj.pocketradio -- -PocketRadio.alignment.observe YES`.
+  The `--` is required; without it `devicectl` parses the app's arguments as its own.
+- Pull the app's `FileLog` (`main.log` and `old.log`):
+  `xcrun devicectl device copy from --device <id> --domain-type appDataContainer --domain-identifier com.jdj.pocketradio --source Documents/debug_log --destination <dir>`.
+  `FileLog` writes to disk only every 100 lines, so call `FileLog.shared.forceFlush()` (or use a Debug flush button) before copying when you need the latest lines.
 
 Reach for the device, not the sim, whenever the thing under test is a gesture,
 haptics, or real account state.
@@ -101,6 +107,8 @@ make test_staging ONLY_TESTING=PocketCastsUtilsTests
 ### Modular Structure
 
 The codebase uses Swift Package Manager modules under `Modules/`:
+
+To give an app target a new package dependency, add it to `Modules/Package.swift`: the package under `dependencies`, and the product under that target's `.xcodeTarget(...)` entry in `XcodeSupport`. The Xcode project links each target through its `XcodeTarget_<name>` product, so `project.pbxproj` does not change. The shared KCRW alignment core is wired this way (`../../pocket-radio-menubar/Packages/StreamSession`); see the shell's `docs/ios/adr/0004-kcrw-playback-clock-on-ios.md`.
 
 - **DataModel** (`Modules/DataModel/`) - Core data persistence using GRDB. Contains podcast, episode, and playback models. Uses custom GRDB macros for model generation.
 - **Server** (`Modules/Server/`) - API communication layer using Protocol Buffers. Depends on DataModel and Utils.
