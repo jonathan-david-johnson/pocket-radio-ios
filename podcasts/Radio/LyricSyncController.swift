@@ -13,6 +13,28 @@ extension LyricSyncControllerDelegate {
     func lyricSyncController(_ c: LyricSyncController, didUpdateNowPlayingAlbum text: String) {}
 }
 
+/// Where saved per-station lyric offsets live. The production store is Supabase through
+/// `RadioFavoritesManager`; tests inject a fake so nothing touches the real `lyric_offsets` table.
+protocol LyricOffsetStore {
+    func fetchOffsets() async -> [String: Int]
+    func savedOffset(stationId: String) -> Int?
+    func saveOffset(stationId: String, seconds: Int) async
+}
+
+struct RadioFavoritesLyricOffsetStore: LyricOffsetStore {
+    func fetchOffsets() async -> [String: Int] {
+        await RadioFavoritesManager.shared.fetchLyricOffsets()
+    }
+
+    func savedOffset(stationId: String) -> Int? {
+        RadioFavoritesManager.shared.lyricOffsets[stationId]
+    }
+
+    func saveOffset(stationId: String, seconds: Int) async {
+        await RadioFavoritesManager.shared.upsertLyricOffset(stationId: stationId, seconds: seconds)
+    }
+}
+
 /// Owns the full lyrics state machine for a radio station:
 /// fetch, LRC parse, synced-line timer, offset nudge, and debounced Supabase persistence.
 /// Callers (StationDetailViewController) become thin delegates that update UI only.
@@ -22,11 +44,20 @@ final class LyricSyncController {
         case none, fetching, found, notFound, betweenTracks
     }
 
+    typealias LyricLoader = (_ artist: String, _ title: String, _ album: String?) async -> LyricsResult?
+    /// Starts a repeating tick and returns the function that stops it.
+    typealias TickScheduler = (@escaping () -> Void) -> () -> Void
+    /// The media-clock lyric position for a station: nil unless applying and the clock is valid.
+    typealias PositionSource = (_ stationId: String) -> (occurrenceID: String, seconds: Double)?
+
     weak var delegate: LyricSyncControllerDelegate?
 
     private(set) var status: LyricStatus = .none
     private(set) var lyricOffset: TimeInterval = 0
     private(set) var currentSongKey: String?
+    /// The aligned occurrence these lyrics were loaded for. Non-nil means Apply (ADR 0005); nil is
+    /// the wall-clock path for Off and Observe.
+    private(set) var currentOccurrenceID: String?
     private(set) var lyricStartDate: Date?
     private(set) var currentEntryAlbum: String?
 
@@ -34,31 +65,65 @@ final class LyricSyncController {
 
     private let stationId: String
     private let stationDisplayTitle: String
+    /// The lyric fetch both screens use, so station detail and full-screen lyrics get the same lines.
+    let loader: LyricLoader
+    private let offsetStore: LyricOffsetStore
+    private let clock: () -> Date
+    private let scheduleTicks: TickScheduler
+    private let positionSource: PositionSource
+    private let isApplying: (String) -> Bool
 
     private var lyricLines: [LyricLine] = []
     private var lyricDuration: TimeInterval?
-    private var lyricTimer: Timer?
+    private var cancelTicks: (() -> Void)?
     private var lyricFetchTask: Task<Void, Never>?
+    private var generation = 0
+    private var correctionSeconds: TimeInterval = 0
+    private var correctionOccurrenceID: String?
     private var lyricOffsetSaveTask: Task<Void, Never>?
+    private var tickObservers: [UUID: () -> Void] = [:]
 
-    private static let introGrace: TimeInterval = 3
-    private static let endGrace: TimeInterval = 12
+    private static let introGrace = AlignedLyricsPolicy.introGrace
+    private static let endGrace = AlignedLyricsPolicy.endGrace
 
-    init(stationId: String, stationDisplayTitle: String) {
+    static let oneSecondTicks: TickScheduler = { handler in
+        let timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in handler() }
+        return { timer.invalidate() }
+    }
+
+    init(stationId: String,
+         stationDisplayTitle: String,
+         loader: @escaping LyricLoader = { artist, title, album in
+             await LyricsService.shared.fetch(artist: artist, title: title, album: album)
+         },
+         offsetStore: LyricOffsetStore = RadioFavoritesLyricOffsetStore(),
+         clock: @escaping () -> Date = Date.init,
+         scheduleTicks: @escaping TickScheduler = LyricSyncController.oneSecondTicks,
+         positionSource: @escaping PositionSource = { AlignedConsumers.lyricPosition(stationId: $0) },
+         isApplying: @escaping (String) -> Bool = { AlignedConsumers.isApplying(stationId: $0) }) {
         self.stationId = stationId
         self.stationDisplayTitle = stationDisplayTitle
+        self.loader = loader
+        self.offsetStore = offsetStore
+        self.clock = clock
+        self.scheduleTicks = scheduleTicks
+        self.positionSource = positionSource
+        self.isApplying = isApplying
     }
 
     // MARK: - Public interface
 
-    func load(entry: TracklistEntry?) {
+    func load(entry: TracklistEntry?, occurrenceID: String? = nil) {
         guard let entry, !entry.title.isEmpty else { return }
         let key = songKey(for: entry)
-        if currentSongKey == key { return }
+        // A repeat play of the same song is a new occurrence and reloads.
+        if currentSongKey == key && currentOccurrenceID == occurrenceID { return }
 
         lyricFetchTask?.cancel()
         resetState()
+        let generation = self.generation
         currentSongKey = key
+        currentOccurrenceID = occurrenceID
         currentEntryAlbum = entry.album
         setStatus(.fetching)
         delegate?.lyricSyncController(self, didUpdateHeaderText: "Fetching…")
@@ -66,8 +131,9 @@ final class LyricSyncController {
         lyricFetchTask = Task { [weak self] in
             guard let self else { return }
             lyricLog.debug("fetch start: artist='\(entry.artist, privacy: .public)' title='\(entry.title, privacy: .public)'")
-            async let offsetsTask = RadioFavoritesManager.shared.fetchLyricOffsets()
-            let result = await LyricsService.shared.fetch(artist: entry.artist, title: entry.title, album: entry.album)
+            // Apply never reads the saved offsets (ADR 0005).
+            async let offsetsTask: [String: Int] = occurrenceID == nil ? self.offsetStore.fetchOffsets() : [:]
+            let result = await self.loader(entry.artist, entry.title, entry.album)
             lyricLog.debug("fetch done: result=\(result == nil ? "nil" : result!.hasSynced ? "synced(\(result!.lines.count)lines)" : result!.plain != nil ? "plain" : "empty", privacy: .public) cancelled=\(Task.isCancelled)")
             _ = await offsetsTask
             guard !Task.isCancelled else {
@@ -75,9 +141,12 @@ final class LyricSyncController {
                 return
             }
             await MainActor.run {
-                guard self.currentSongKey == key else {
+                guard self.currentSongKey == key, self.generation == generation else {
                     lyricLog.debug("song key mismatch: expected '\(key, privacy: .public)' got '\(self.currentSongKey ?? "nil", privacy: .public)'")
                     return
+                }
+                if let occurrenceID {
+                    guard self.currentOccurrenceID == occurrenceID, self.isApplying(self.stationId) else { return }
                 }
                 guard let result else {
                     self.delegate?.lyricSyncController(self, didUpdateHeaderText: "No lyrics found")
@@ -87,10 +156,15 @@ final class LyricSyncController {
                 if result.hasSynced {
                     self.lyricLines = result.lines
                     self.lyricDuration = result.duration
-                    self.lyricOffset = TimeInterval(RadioFavoritesManager.shared.lyricOffsets[self.stationId] ?? 0)
+                    if occurrenceID != nil {
+                        self.setStatus(.found)
+                        self.startApplyTimer()
+                        return
+                    }
+                    self.lyricOffset = TimeInterval(self.offsetStore.savedOffset(stationId: self.stationId) ?? 0)
                     lyricLog.info("restored offset \(self.lyricOffset, format: .fixed(precision: 1))s station=\(self.stationId, privacy: .public)")
-                    let elapsed = entry.playedAt.map { Date().timeIntervalSince($0) } ?? 0
-                    self.lyricStartDate = entry.playedAt ?? Date().addingTimeInterval(-elapsed)
+                    let elapsed = entry.playedAt.map { self.clock().timeIntervalSince($0) } ?? 0
+                    self.lyricStartDate = entry.playedAt ?? self.clock().addingTimeInterval(-elapsed)
                     self.setStatus(.found)
                     self.startTimer(initialElapsed: max(0, elapsed))
                 } else if let plain = result.plain, let firstLine = self.firstNonEmptyLine(plain) {
@@ -106,9 +180,19 @@ final class LyricSyncController {
 
     @discardableResult
     func adjustOffset(by delta: TimeInterval) -> TimeInterval {
+        if let occurrenceID = currentOccurrenceID {
+            // Apply: an in-memory correction keyed to the occurrence. Saved offsets are neither
+            // read nor written (ADR 0005).
+            guard correctedPosition() != nil else { return correction }
+            correctionSeconds = correction + delta
+            correctionOccurrenceID = occurrenceID
+            lyricLog.info("lyric correction = \(self.correctionSeconds, format: .fixed(precision: 1))s  song=\(self.currentSongKey ?? "—", privacy: .public)")
+            applyTick()
+            return correction
+        }
         lyricOffset += delta
         if let startDate = lyricStartDate {
-            tick(at: Date().timeIntervalSince(startDate) + lyricOffset)
+            tick(at: clock().timeIntervalSince(startDate) + lyricOffset)
         }
         lyricLog.info("lyric offset = \(self.lyricOffset, format: .fixed(precision: 1))s  song=\(self.currentSongKey ?? "—", privacy: .public)")
 
@@ -119,10 +203,40 @@ final class LyricSyncController {
             try? await Task.sleep(nanoseconds: 800_000_000)
             if Task.isCancelled { return }
             guard let self else { return }
-            await RadioFavoritesManager.shared.upsertLyricOffset(stationId: self.stationId, seconds: seconds)
+            await self.offsetStore.saveOffset(stationId: self.stationId, seconds: seconds)
             lyricLog.info("saved offset \(seconds)s station=\(self.stationId, privacy: .public)")
         }
         return lyricOffset
+    }
+
+    /// Waits for the in-flight fetch to finish. For tests.
+    func waitForFetch() async {
+        await lyricFetchTask?.value
+    }
+
+    /// Apply: the in-memory nudge for the current occurrence, in seconds. Zero in Off and Observe
+    /// (their nudge is `lyricOffset`) and for any other occurrence.
+    var correction: TimeInterval {
+        guard let occurrenceID = currentOccurrenceID, occurrenceID == correctionOccurrenceID else { return 0 }
+        return correctionSeconds
+    }
+
+    /// Apply: the media-clock song position plus the correction, the position every lyric view
+    /// should highlight. Nil when not applying, when the clock gives no valid position, or when the
+    /// position belongs to an occurrence other than the one the lyrics were loaded for.
+    func correctedPosition() -> TimeInterval? {
+        guard let occurrenceID = currentOccurrenceID, isApplying(stationId),
+              let position = positionSource(stationId), position.occurrenceID == occurrenceID else { return nil }
+        return position.seconds + correction
+    }
+
+    /// Apply: calls `handler` after every tick of this controller's clock, so full-screen lyrics
+    /// reads the same position without a timer of its own (ADR 0005). Returns the function that
+    /// unsubscribes. Observers outlive `load` and `stop`; their owner unsubscribes.
+    func observeTicks(_ handler: @escaping () -> Void) -> () -> Void {
+        let id = UUID()
+        tickObservers[id] = handler
+        return { [weak self] in self?.tickObservers[id] = nil }
     }
 
     func stop() {
@@ -143,35 +257,67 @@ final class LyricSyncController {
 
     private func startTimer(initialElapsed: TimeInterval) {
         tick(at: initialElapsed + lyricOffset)
-        let timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        cancelTicks = scheduleTicks { [weak self] in
             guard let self, let startDate = self.lyricStartDate else { return }
-            self.tick(at: Date().timeIntervalSince(startDate) + self.lyricOffset)
+            self.tick(at: self.clock().timeIntervalSince(startDate) + self.lyricOffset)
         }
-        lyricTimer = timer
     }
 
-    private func tick(at offset: TimeInterval) {
+    private func startApplyTimer() {
+        applyTick()
+        cancelTicks = scheduleTicks { [weak self] in
+            self?.applyTick()
+            self?.tickObservers.values.forEach { $0() }
+        }
+    }
+
+    /// Apply: the line comes from the media clock plus the in-memory correction, never the wall clock.
+    private func applyTick() {
+        // The position source is nil once the session stops applying, so a stopped session falls through to
+        // the no-highlight state, like the full-screen view on the same clock.
+        guard let occurrenceID = currentOccurrenceID else { return }
+        guard let position = positionSource(stationId), position.occurrenceID == occurrenceID else {
+            // No valid clock, or a position for another occurrence: no timed highlight and no
+            // wall-clock fallback (ADR 0005).
+            showBetweenTracks(writesAlbum: false)
+            return
+        }
+        tick(at: position.seconds + correction, writesAlbum: false)
+    }
+
+    private func showBetweenTracks(writesAlbum: Bool) {
+        guard status != .betweenTracks else { return }
+        delegate?.lyricSyncController(self, didUpdateHeaderText: "♪ " + stationDisplayTitle)
+        if writesAlbum {
+            delegate?.lyricSyncController(self, didUpdateNowPlayingAlbum: currentEntryAlbum ?? stationDisplayTitle)
+        }
+        setStatus(.betweenTracks)
+    }
+
+    private func tick(at offset: TimeInterval, writesAlbum: Bool = true) {
         guard let first = lyricLines.first, let last = lyricLines.last else { return }
         let songEnd = lyricDuration ?? (last.timestamp + Self.endGrace)
         if offset < first.timestamp - Self.introGrace || offset > songEnd + Self.endGrace {
-            if status != .betweenTracks {
-                delegate?.lyricSyncController(self, didUpdateHeaderText: "♪ " + stationDisplayTitle)
-                delegate?.lyricSyncController(self, didUpdateNowPlayingAlbum: currentEntryAlbum ?? stationDisplayTitle)
-                setStatus(.betweenTracks)
-            }
+            showBetweenTracks(writesAlbum: writesAlbum)
             return
         }
         let result = LyricsResult(lines: lyricLines, plain: nil)
         if let line = LyricsService.shared.currentLine(in: result, at: offset) {
             delegate?.lyricSyncController(self, didUpdateHeaderText: "♪ " + line.text)
-            delegate?.lyricSyncController(self, didUpdateNowPlayingAlbum: line.text)
+            if writesAlbum {
+                delegate?.lyricSyncController(self, didUpdateNowPlayingAlbum: line.text)
+            }
             if status != .found { setStatus(.found) }
         }
     }
 
     private func resetState() {
-        lyricTimer?.invalidate()
-        lyricTimer = nil
+        generation += 1
+        currentOccurrenceID = nil
+        correctionSeconds = 0
+        correctionOccurrenceID = nil
+        cancelTicks?()
+        cancelTicks = nil
         lyricFetchTask?.cancel()
         lyricFetchTask = nil
         lyricOffsetSaveTask?.cancel()

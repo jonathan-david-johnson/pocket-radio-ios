@@ -18,12 +18,26 @@ final class LyricsViewController: UIViewController {
     /// Live sync offset copied from the station detail. Updated when the user taps +/-.
     var lyricOffset: TimeInterval = 0
 
+    /// Apply: station detail's clock for the current song. When set, this screen has no timer,
+    /// no `Date()` and no `initialOffset` of its own (ADR 0005).
+    var alignedClock: AlignedLyricsClock?
+
+    /// Fetches the lyrics. Tests replace it so nothing reaches the network.
+    var lyricLoader: LyricSyncController.LyricLoader = { artist, title, album in
+        await LyricsService.shared.fetch(artist: artist, title: title, album: album)
+    }
+
     private var lyricsResult: LyricsResult?
     private var fetchTask: Task<Void, Never>?
 
     private var lyricStartDate: Date?
     private var lyricTimer: Timer?
     private var currentLineIndex: Int = 0
+    /// Apply: the highlighted line from the shared clock. Nil is no timed highlight.
+    private var alignedIndex: Int?
+    private var tickSubscription: (() -> Void)?
+    /// The row to highlight: the shared clock's line in Apply, today's own index otherwise.
+    private var highlightedRow: Int? { alignedClock != nil ? alignedIndex : currentLineIndex }
 
     private typealias LyricStatus = LyricSyncController.LyricStatus
     private var lyricStatus: LyricStatus = .none
@@ -124,6 +138,23 @@ final class LyricsViewController: UIViewController {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    deinit {
+        let unsubscribe = tickSubscription
+        MainActor.assumeIsolated { unsubscribe?() }
+    }
+
+    #if DEBUG
+    var _isCurrentSongForTesting: Bool { isCurrentSong }
+    var _initialOffsetForTesting: TimeInterval { initialOffset }
+    var _hasLyricRowsForTesting: Bool { lyricsResult != nil }
+    var _highlightedRowForTesting: Int? { highlightedRow }
+    var _hasOwnTimerForTesting: Bool { lyricTimer != nil }
+    var _offsetLabelForTesting: String? { offsetLabel.text }
+    var _offsetControlsHiddenForTesting: Bool { offsetControlsView?.isHidden ?? true }
+    var _statusForTesting: (text: String?, hidden: Bool) { (statusLabel.text, statusLabel.isHidden) }
+    func _nudgeForTesting(_ delta: TimeInterval) { adjustOffset(by: delta) }
+    #endif
+
     override func viewDidLoad() {
         super.viewDidLoad()
         title = entry.title
@@ -134,8 +165,7 @@ final class LyricsViewController: UIViewController {
 
         fetchTask = Task { [weak self] in
             guard let self else { return }
-            let result = await LyricsService.shared.fetch(
-                artist: entry.artist, title: entry.title, album: entry.album)
+            let result = await lyricLoader(entry.artist, entry.title, entry.album)
             await MainActor.run { [weak self] in
                 self?.applyResult(result)
             }
@@ -149,8 +179,13 @@ final class LyricsViewController: UIViewController {
         // Result may have arrived during push animation (cache hit). Kick off
         // interactive elements now that the view has a real frame.
         guard lyricsResult?.hasSynced == true else { return }
+        if alignedClock != nil {
+            // The shared clock moved on while this screen was away.
+            updateOffsetLabel()
+            refreshAligned(scroll: false)
+        }
         scrollToCurrentLine(animated: false)
-        if isCurrentSong, lyricTimer == nil { startTimer() }
+        if isCurrentSong, lyricTimer == nil, tickSubscription == nil { startTimer() }
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -254,7 +289,9 @@ final class LyricsViewController: UIViewController {
     }
 
     private func updateOffsetLabel() {
-        offsetLabel.text = "\(lyricOffset >= 0 ? "+" : "")\(Int(lyricOffset))s"
+        // Apply: the shared correction, not a local copy.
+        let shown = alignedClock?.correction() ?? lyricOffset
+        offsetLabel.text = "\(shown >= 0 ? "+" : "")\(Int(shown))s"
     }
 
     private func updateStatusLabel() {
@@ -268,9 +305,14 @@ final class LyricsViewController: UIViewController {
     }
 
     private func adjustOffset(by delta: TimeInterval) {
-        let newOffset = delegate?.lyricsViewController(self, adjustLyricOffsetBy: delta) ?? (lyricOffset + delta)
+        let newOffset = delegate?.lyricsViewController(self, adjustLyricOffsetBy: delta)
+            ?? alignedClock?.adjust(delta) ?? (lyricOffset + delta)
         lyricOffset = newOffset
         updateOffsetLabel()
+        if alignedClock != nil {
+            if lyricsResult?.hasSynced == true { refreshAligned(scroll: true) }
+            return
+        }
         guard isCurrentSong, lyricsResult?.hasSynced == true, let start = lyricStartDate else { return }
         let offset = Date().timeIntervalSince(start) + lyricOffset
         let (newIndex, newStatus) = lineState(for: offset)
@@ -300,7 +342,13 @@ final class LyricsViewController: UIViewController {
         if result?.hasSynced == true {
             lyricStatus = .found
             setupSyncedTable()
-            currentLineIndex = startingIndex(for: initialOffset + lyricOffset)
+            if alignedClock != nil {
+                let state = alignedLineState()
+                alignedIndex = state.index
+                lyricStatus = state.betweenTracks ? .betweenTracks : .found
+            } else {
+                currentLineIndex = startingIndex(for: initialOffset + lyricOffset)
+            }
             // If viewDidAppear already fired (result arrived late via network),
             // start interactive elements immediately; otherwise viewDidAppear handles it.
             if view.window != nil {
@@ -371,6 +419,11 @@ final class LyricsViewController: UIViewController {
     // MARK: - Timer / advancing
 
     private func startTimer() {
+        if let clock = alignedClock {
+            // Apply: follow station detail's tick; this screen has no timer or wall clock of its own.
+            tickSubscription = clock.subscribe { [weak self] in self?.refreshAligned(scroll: true) }
+            return
+        }
         lyricStartDate = Date().addingTimeInterval(-initialOffset)
         let timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             self?.tick()
@@ -381,6 +434,32 @@ final class LyricsViewController: UIViewController {
     private func stopTimer() {
         lyricTimer?.invalidate()
         lyricTimer = nil
+        tickSubscription?()
+        tickSubscription = nil
+    }
+
+    private func alignedLineState() -> AlignedLyricsPolicy.LineState {
+        guard let position = alignedClock?.position(), let result = lyricsResult else {
+            return AlignedLyricsPolicy.LineState(index: nil, betweenTracks: true)
+        }
+        return AlignedLyricsPolicy.lineState(lines: result.lines, duration: result.duration, position: position)
+    }
+
+    /// Apply: shows the line and status for the shared clock's current position.
+    private func refreshAligned(scroll: Bool) {
+        updateOffsetLabel()
+        let state = alignedLineState()
+        let newStatus: LyricStatus = state.betweenTracks ? .betweenTracks : .found
+        if newStatus != lyricStatus {
+            lyricStatus = newStatus
+            updateStatusLabel()
+        }
+        guard state.index != alignedIndex else { return }
+        let previous = alignedIndex
+        alignedIndex = state.index
+        let rows = [previous, alignedIndex].compactMap { $0 }.map { IndexPath(row: $0, section: 0) }
+        lyricsTable.reloadRows(at: rows, with: .none)
+        if scroll, alignedIndex != nil { scrollToCurrentLine(animated: true) }
     }
 
     private func tick() {
@@ -431,9 +510,9 @@ final class LyricsViewController: UIViewController {
     }
 
     private func scrollToCurrentLine(animated: Bool) {
-        guard lyricsResult?.hasSynced == true,
-              currentLineIndex < (lyricsResult?.lines.count ?? 0) else { return }
-        lyricsTable.scrollToRow(at: IndexPath(row: currentLineIndex, section: 0), at: .middle, animated: animated)
+        guard lyricsResult?.hasSynced == true, let row = highlightedRow,
+              row < (lyricsResult?.lines.count ?? 0) else { return }
+        lyricsTable.scrollToRow(at: IndexPath(row: row, section: 0), at: .middle, animated: animated)
     }
 }
 
@@ -452,7 +531,7 @@ extension LyricsViewController: UITableViewDataSource, UITableViewDelegate {
         cell.textLabel?.numberOfLines = 0
         cell.textLabel?.text = line.text
 
-        let isCurrent = indexPath.row == currentLineIndex
+        let isCurrent = indexPath.row == highlightedRow
         cell.textLabel?.font = isCurrent ? .systemFont(ofSize: 18, weight: .bold) : .systemFont(ofSize: 16)
         cell.textLabel?.textColor = isCurrent
             ? AppTheme.colorForStyle(.primaryText01)

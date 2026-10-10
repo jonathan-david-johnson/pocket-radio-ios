@@ -85,6 +85,8 @@ class StationDetailViewController: SimpleNotificationsViewController {
     private var isApplying: Bool { AlignedConsumers.isApplying(stationId: station.uuid) }
     private var pendingTracklistTask: Task<Void, Never>?
     private var tracklistRefreshTask: Task<Void, Never>?
+    /// The full-screen lyrics screen pushed from here, while it is open.
+    private weak var openLyricsScreen: LyricsViewController?
 
     // MARK: - Lyrics (UI only — state lives in lyricSync)
 
@@ -143,9 +145,9 @@ class StationDetailViewController: SimpleNotificationsViewController {
         return btn
     }()
 
-    init(station: RadioStation) {
+    init(station: RadioStation, lyricSync: LyricSyncController? = nil) {
         self.station = station
-        self.lyricSync = LyricSyncController(
+        self.lyricSync = lyricSync ?? LyricSyncController(
             stationId: station.stationId,
             stationDisplayTitle: station.displayableTitle()
         )
@@ -180,6 +182,7 @@ class StationDetailViewController: SimpleNotificationsViewController {
             self.entries = Array(cached.prefix(5))
             self.tracklistTable.reloadData()
         }
+        lyricSync.delegate = self
         refreshAlignedDisplay()
 
         addCustomObserver(Constants.Notifications.playbackStarted, selector: #selector(playbackChanged))
@@ -195,12 +198,13 @@ class StationDetailViewController: SimpleNotificationsViewController {
             object: nil
         )
 
-        lyricSync.delegate = self
         loadFavoriteState()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        // Back from full-screen lyrics (or never opened): a stale reference must not keep the lyrics running.
+        openLyricsScreen = nil
         themeDidChange()
         refreshAlignedDisplay()
         if station.tracklistUrl != nil {
@@ -216,7 +220,12 @@ class StationDetailViewController: SimpleNotificationsViewController {
         pendingTracklistTask = nil
         fingerprinter?.cancel()
         fingerprinter = nil
-        lyricSync.stop()
+        // Apply: pushing full-screen lyrics must not stop the shared clock or reset its correction (ADR 0005).
+        if AlignedLyricsPolicy.shouldStopOnDisappear(applying: isApplying, lyricsScreenOpen: openLyricsScreen != nil,
+                                                     isMovingFromParent: isMovingFromParent,
+                                                     isBeingDismissed: isBeingDismissed) {
+            lyricSync.stop()
+        }
     }
 
     /// Polls the tracklist every 30s while this screen is visible.
@@ -236,6 +245,8 @@ class StationDetailViewController: SimpleNotificationsViewController {
         MainActor.assumeIsolated {
             pendingTracklistTask?.cancel()
             pendingTracklistTask = nil
+            // The shared clock can outlive the screen when it was left with full-screen lyrics open.
+            lyricSync.stop()
         }
         remoteObservers.forEach { NotificationCenter.default.removeObserver($0) }
         NotificationCenter.default.removeObserver(self)
@@ -409,6 +420,7 @@ class StationDetailViewController: SimpleNotificationsViewController {
                 icyArtist = ""
                 updateNowPlayingLabels()
                 tracklistTable.reloadData()
+                stopLyrics()
             }
             return
         }
@@ -418,6 +430,30 @@ class StationDetailViewController: SimpleNotificationsViewController {
         alignedEntry = display.markedEntry
         updateNowPlayingLabels()
         tracklistTable.reloadData()
+        reloadLyrics()
+    }
+
+    /// Loads the lyrics for the song this screen follows: the aligned song and its occurrence in
+    /// Apply (none when unavailable), the feed's newest row otherwise. Loading the song already
+    /// loaded is a no-op, so it is safe to call on every aligned post and on appear.
+    private func reloadLyrics() {
+        switch AlignedLyricsPolicy.lyricLoad(applying: isApplying,
+                                             aligned: AlignedConsumers.entry(for: station.uuid),
+                                             occurrenceID: AlignedConsumers.currentOccurrenceID(stationId: station.uuid),
+                                             feedTop: entries.first) {
+        case .aligned(let entry, let occurrenceID):
+            lyricSync.load(entry: entry, occurrenceID: occurrenceID)
+        case .wallClock(let top):
+            lyricSync.load(entry: top)
+        case .none:
+            stopLyrics()
+        }
+    }
+
+    private func stopLyrics() {
+        let hadLyrics = lyricSync.hasLyrics
+        lyricSync.stop()
+        if hadLyrics { tracklistTable.reloadSections([0], with: .none) }
     }
 
     private func updateNowPlayingLabels() {
@@ -495,7 +531,7 @@ class StationDetailViewController: SimpleNotificationsViewController {
         do {
             let fresh = try await RadioTracklistService.shared.fetch(stationId: station.uuid, url: url)
             let newTop = adoptFetchedTracklist(fresh)
-            self.lyricSync.load(entry: self.entries.first)
+            self.reloadLyrics()
             // Sync car/lockscreen when tracklist detects a new top song (covers stations
             // where ICY is absent or fires late).
             if let newTop,
@@ -533,6 +569,8 @@ class StationDetailViewController: SimpleNotificationsViewController {
         (nowPlayingTitleLabel.text, nowPlayingTitleLabel.isHidden, nowPlayingArtistLabel.text, nowPlayingArtistLabel.isHidden)
     }
     var _identifyHiddenForTesting: Bool { identifyButton.isHidden }
+    func _selectRowForTesting(_ row: Int) { tableView(tracklistTable, didSelectRowAt: IndexPath(row: row, section: 0)) }
+    func _reloadLyricsForTesting() { reloadLyrics() }
     var _markedRowsForTesting: [Int] {
         (0..<entries.count).filter {
             tableView(tracklistTable, cellForRowAt: IndexPath(row: $0, section: 0)).accessoryView != nil
@@ -660,12 +698,30 @@ extension StationDetailViewController: UITableViewDelegate {
         guard indexPath.row < entries.count else { return }
         let entry = entries[indexPath.row]
 
-        let isCurrentSong = indexPath.row == 0 && lyricSync.currentSongKey == lyricSync.songKey(for: entry)
-        let elapsed = isCurrentSong ? (lyricSync.lyricStartDate.map { Date().timeIntervalSince($0) } ?? 0) : 0
+        let applying = isApplying
+        if applying { reloadLyrics() }
+        let loadedForRow = lyricSync.currentSongKey == lyricSync.songKey(for: entry)
+        var isCurrentSong = AlignedLyricsPolicy.isCurrentSong(applying: applying, row: indexPath.row, entries: entries,
+                                                              aligned: alignedEntry,
+                                                              wallClockCurrent: indexPath.row == 0 && loadedForRow)
+        // Apply: the full screen reads this screen's clock for the occurrence its lyrics were loaded for.
+        // Without one it has no current song and so no clock of its own (ADR 0005).
+        var clock: AlignedLyricsClock?
+        if applying, isCurrentSong {
+            if loadedForRow, let occurrenceID = lyricSync.currentOccurrenceID {
+                clock = lyricSync.lyricsClock(occurrenceID: occurrenceID)
+            } else {
+                isCurrentSong = false
+            }
+        }
+        let elapsed = isCurrentSong && !applying ? (lyricSync.lyricStartDate.map { Date().timeIntervalSince($0) } ?? 0) : 0
 
         let vc = LyricsViewController(entry: entry, stationName: station.displayableTitle(), offset: elapsed, isCurrentSong: isCurrentSong)
         vc.lyricOffset = lyricSync.lyricOffset
+        vc.alignedClock = clock
+        vc.lyricLoader = lyricSync.loader
         vc.delegate = self
+        openLyricsScreen = vc
         navigationController?.pushViewController(vc, animated: true)
     }
 }
@@ -674,7 +730,9 @@ extension StationDetailViewController: UITableViewDelegate {
 
 extension StationDetailViewController: LyricsViewControllerDelegate {
     func lyricsViewController(_ viewController: LyricsViewController, adjustLyricOffsetBy delta: TimeInterval) -> TimeInterval {
-        lyricSync.adjustOffset(by: delta)
+        // Apply: the full screen nudges this screen's own correction, for its occurrence only.
+        if let clock = viewController.alignedClock { return clock.adjust(delta) }
+        return lyricSync.adjustOffset(by: delta)
     }
 }
 

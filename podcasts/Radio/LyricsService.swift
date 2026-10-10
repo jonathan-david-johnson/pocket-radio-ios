@@ -137,20 +137,7 @@ final class LyricsService {
     }
 
     func currentLine(in result: LyricsResult, at offset: TimeInterval) -> LyricLine? {
-        guard !result.lines.isEmpty else { return nil }
-        // Find last line whose timestamp <= offset
-        var lo = 0, hi = result.lines.count - 1
-        var match: LyricLine? = nil
-        while lo <= hi {
-            let mid = (lo + hi) / 2
-            if result.lines[mid].timestamp <= offset {
-                match = result.lines[mid]
-                lo = mid + 1
-            } else {
-                hi = mid - 1
-            }
-        }
-        return match
+        LyricLineIndex.index(in: result.lines, at: offset).map { result.lines[$0] }
     }
 
     // MARK: - LRC parser
