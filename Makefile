@@ -26,9 +26,6 @@ CARPLAY_HARNESS_TESTS = IcyStreamServerTests FakeWorldTests NowPlayingProbeTests
 	RaceFixtureTests PolicyStepsTests RadioOutputTestHooksTests ScenarioRegistrationTests KnownBugMappingTests
 CARPLAY_SCENARIO_TESTS = NowPlayingSmokeTests CarPlayArtworkTests CarPlayLifecycleTests CarPlayRaceTests CarPlayPolicyTests
 CARPLAY_TESTS ?= $(CARPLAY_HARNESS_TESTS) $(CARPLAY_SCENARIO_TESTS)
-# The disposable M13 experiments. Removed when the spike folder is deleted.
-CARPLAY_SPIKE_TESTS = CarPlayOutputSpikeE1Tests CarPlayOutputSpikeE2Tests CarPlayOutputSpikeE3Tests \
-	CarPlayOutputSpikeE4Tests CarPlayOutputSpikeE5Tests
 
 # Install on a physical device, signed with the paid Apple Developer Program team
 # (X6DVXL53Z3, Individual). The paid team is required for the CarPlay Audio
@@ -39,7 +36,7 @@ DEVICE_TEAM_ID = X6DVXL53Z3
 DEVICE_BUNDLE_ID_ROOT = com.jdj.pocketradio
 DEVICE_BUNDLE_ID = $(DEVICE_BUNDLE_ID_ROOT)
 
-.PHONY: help build clean test lint lint_lenient format install_dependencies build_sim run_sim launch_sim build_device run_device carplay_sim test_carplay test_carplay_device test_carplay_spike
+.PHONY: help build clean test lint lint_lenient format install_dependencies build_sim run_sim launch_sim build_device run_device carplay_sim test_carplay test_carplay_device
 
 define run_in_buildtools
 	@pushd BuildTools && \
@@ -160,9 +157,6 @@ test_carplay_device: ## Run the CarPlay output harness on the connected device (
 	   -allowProvisioningUpdates \
 	   DEVELOPMENT_TEAM=$(DEVICE_TEAM_ID) \
 	   PRODUCT_BUNDLE_IDENTIFIER_ROOT=$(DEVICE_BUNDLE_ID_ROOT)
-
-test_carplay_spike: ## M13 spike: run the disposable CarPlayOutputSpike* experiments
-	$(MAKE) test_carplay CARPLAY_TESTS="$(CARPLAY_SPIKE_TESTS)"
 
 build_device: ## Build StagingDebug for Jonathan iPhone, signed with personal team
 	xcodebuild -project podcasts.xcodeproj \
