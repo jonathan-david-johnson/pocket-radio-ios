@@ -34,6 +34,9 @@ class MiniPlayerViewController: SimpleNotificationsViewController {
     @IBOutlet var gradientView: MiniPlayerGradientView!
 
     private var lastEpisodeUuidImageLoaded = ""
+    /// The song whose art the radio slot is showing, nil while it shows the station logo.
+    /// A repaint for the same song is skipped so it can't replace song art with the logo. See ADR 0005.
+    private var radioArtworkSongKey: String?
     private var lastEpisodeUuidAutoOpened = ""
     private var showingChapterArtwork = false
     var fullScreenPlayer: PlayerContainerViewController?
@@ -561,15 +564,20 @@ class MiniPlayerViewController: SimpleNotificationsViewController {
         showingChapterArtwork = false
         guard needsReload else { return }
 
+        let isNewItem = lastEpisodeUuidImageLoaded != episode.uuid
         lastEpisodeUuidImageLoaded = episode.uuid
         if let userEpisode = episode as? UserEpisode {
             podcastArtwork.setUserEpisode(uuid: userEpisode.uuid, size: .list)
         } else {
             #if !APPCLIP
             // Live radio has no episode artwork to load — paint the station
-            // logo instead and let the tracklist observers replace it.
+            // logo for a new station, then resolve the song's art. A forced repaint
+            // of the same station (rate change, theme) must keep the song art it has.
             if let radio = PlaybackManager.shared.liveStation(for: episode) {
-                applyRadioBaseArtwork(for: radio)
+                if isNewItem {
+                    applyRadioBaseArtwork(for: radio)
+                }
+                resolveRadioArtwork(stationId: radio.uuid, icyArtist: "", icyTitle: "")
             } else {
                 podcastArtwork.setBaseEpisode(episode: episode, size: .list)
             }
@@ -801,6 +809,7 @@ class MiniPlayerViewController: SimpleNotificationsViewController {
 
     #if !APPCLIP
     func applyRadioBaseArtwork(for station: RadioStation) {
+        radioArtworkSongKey = nil
         podcastArtwork.imageView?.kf.cancelDownloadTask()
         if let asset = station.logoAsset, let image = UIImage(named: asset) {
             podcastArtwork.setImageManually(image: image, size: .list)
@@ -828,6 +837,12 @@ class MiniPlayerViewController: SimpleNotificationsViewController {
               radio.uuid == stationId,
               let imageView = podcastArtwork.imageView else { return }
 
+        let resolveEntry = TrackArtworkResolver.bestResolveEntry(stationId: stationId, icyArtist: icyArtist, icyTitle: icyTitle)
+        let songKey = RadioArtworkRepaint.songKey(stationId: stationId, entry: resolveEntry,
+                                                   occurrenceID: AlignedConsumers.currentOccurrenceID(stationId: stationId))
+        // This song's art is already showing. Repainting would put the logo back until the next song.
+        if RadioArtworkRepaint.isPainted(songKey, displayed: radioArtworkSongKey) { return }
+
         // Baseline first so we never show a blank slot during the async resolve.
         applyRadioBaseArtwork(for: radio)
 
@@ -835,7 +850,7 @@ class MiniPlayerViewController: SimpleNotificationsViewController {
         guard let enhancement = CuratedStationsLoader.enhancementsByUUID[stationId],
               enhancement.tracklistUrl != nil else { return }
 
-        guard let resolveEntry = TrackArtworkResolver.bestResolveEntry(stationId: stationId, icyArtist: icyArtist, icyTitle: icyTitle) else { return }
+        guard let resolveEntry else { return }
 
         let resolvedArtist = resolveEntry.artist
         let resolvedTitle = resolveEntry.title
@@ -856,7 +871,12 @@ class MiniPlayerViewController: SimpleNotificationsViewController {
 
                 if let url {
                     imageView.kf.setImage(with: url, placeholder: imageView.image, options: [.transition(.fade(0.2))]) { [weak self] result in
-                        if case .failure = result {
+                        switch result {
+                        case .success:
+                            self?.radioArtworkSongKey = songKey
+                        case .failure(let error):
+                            // A newer image replaced this request. That one owns the slot now.
+                            if error.isTaskCancelled || error.isNotCurrentTask { return }
                             self?.applyRadioBaseArtwork(for: radio)
                         }
                     }
