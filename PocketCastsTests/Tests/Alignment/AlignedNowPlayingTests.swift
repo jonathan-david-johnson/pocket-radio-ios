@@ -249,6 +249,149 @@ final class AlignedNowPlayingTests: XCTestCase {
         XCTAssertEqual(state.current, .unavailable(stationId: station, reason: "selected row is not a song"))
     }
 
+    // MARK: - Short hold through a brief clock fault (bug: title and art blinked to the logo)
+
+    private final class HoldHarness {
+        var date = Date(timeIntervalSince1970: 2_000_000_000)
+        var fire: (@MainActor () -> Void)?
+        var scheduled: [TimeInterval] = []
+        var cancelled = 0
+        var playing = true
+    }
+
+    private func holdPublisher(_ hold: HoldHarness, generation: UUID) -> AlignedNowPlayingPublisher {
+        state.beginApplying(stationId: station, generation: generation)
+        let publisher = AlignedNowPlayingPublisher(
+            stationId: station, generation: generation, holdDuration: 5,
+            now: { hold.date },
+            schedule: { delay, fire in
+                hold.scheduled.append(delay)
+                hold.fire = fire
+                return { hold.cancelled += 1; hold.fire = nil }
+            },
+            state: state, post: { [harness] in harness.posts.append($0) }, emit: { [harness] in harness.lines.append($0) })
+        publisher.isPlayerPlaying = { hold.playing }
+        return publisher
+    }
+
+    private func faulty(_ generation: UUID, reason: String = "player clock: backwardJump") -> RadioAlignmentSnapshot {
+        snapshot(generation: generation, trigger: .playerSample, occurrence: nil, songSeconds: nil, reason: reason)
+    }
+
+    func testBriefClockFaultKeepsTheSongAndPostsNothing() throws {
+        let occurrence = try realOccurrence()
+        let generation = UUID(), hold = HoldHarness()
+        let publisher = holdPublisher(hold, generation: generation)
+        publisher.receive(snapshot(generation: generation, trigger: .playerSample, occurrence: occurrence))
+        XCTAssertEqual(harness.posts.count, 1)
+
+        publisher.receive(faulty(generation))
+        hold.date.addTimeInterval(2)
+        publisher.receive(snapshot(generation: generation, trigger: .playerSample, occurrence: occurrence))
+
+        XCTAssertEqual(harness.posts.count, 1, "same song after the fault: no unavailable post, no repost")
+        XCTAssertEqual(hold.scheduled, [5])
+        XCTAssertEqual(hold.cancelled, 1, "the timer is cancelled once the clock re-pairs")
+        if case .song? = state.current {} else { XCTFail("the song stays published") }
+    }
+
+    func testDifferentSongAfterTheFaultReplacesTheHeldOne() throws {
+        let first = try realOccurrence(title: "First")
+        let second = try realOccurrence(title: "Second")
+        let generation = UUID(), hold = HoldHarness()
+        let publisher = holdPublisher(hold, generation: generation)
+        publisher.receive(snapshot(generation: generation, trigger: .playerSample, occurrence: first))
+
+        publisher.receive(faulty(generation, reason: "player clock: correlationDiscontinuity"))
+        hold.date.addTimeInterval(1)
+        publisher.receive(snapshot(generation: generation, trigger: .playerSample, occurrence: second))
+
+        XCTAssertEqual(harness.posts.count, 2)
+        XCTAssertEqual(harness.posts.last.flatMap(title), "Second")
+    }
+
+    func testFaultThatOutlastsTheHoldPublishesUnavailable_onASampleOrWhenTheTimerFires() throws {
+        let occurrence = try realOccurrence()
+        let generation = UUID(), hold = HoldHarness()
+        let publisher = holdPublisher(hold, generation: generation)
+        publisher.receive(snapshot(generation: generation, trigger: .playerSample, occurrence: occurrence))
+
+        publisher.receive(faulty(generation))
+        hold.date.addTimeInterval(4.9)
+        publisher.receive(faulty(generation))
+        XCTAssertEqual(harness.posts.count, 1, "still inside the hold")
+        hold.date.addTimeInterval(0.2)
+        publisher.receive(faulty(generation))
+        XCTAssertEqual(harness.posts.count, 2)
+        XCTAssertEqual(harness.posts.last.flatMap(title), "")
+        XCTAssertEqual(state.current, .unavailable(stationId: station, reason: "player clock: backwardJump"))
+
+        // Samples can stop while the player waits. The timer then ends the hold.
+        let generation2 = UUID(), hold2 = HoldHarness()
+        let timed = holdPublisher(hold2, generation: generation2)
+        timed.receive(snapshot(generation: generation2, trigger: .playerSample, occurrence: occurrence))
+        timed.receive(faulty(generation2))
+        let before = harness.posts.count
+        hold2.fire?()
+        XCTAssertEqual(harness.posts.count, before + 1)
+        XCTAssertEqual(state.current, .unavailable(stationId: station, reason: "player clock: backwardJump"))
+    }
+
+    func testHoldDoesNotRunOutWhilePaused_thenCountsAgainOnceItPlays() throws {
+        let occurrence = try realOccurrence()
+        let generation = UUID(), hold = HoldHarness()
+        let publisher = holdPublisher(hold, generation: generation)
+        publisher.receive(snapshot(generation: generation, trigger: .playerSample, occurrence: occurrence))
+        publisher.receive(faulty(generation, reason: "player clock: mediaProgressionDiscontinuity"))
+
+        // The user paused. The timer fires and a sample arrives long after 5 s, with the song still up.
+        hold.playing = false
+        hold.date.addTimeInterval(8)
+        hold.fire?()
+        publisher.receive(faulty(generation, reason: "player clock: mediaProgressionDiscontinuity"))
+        XCTAssertEqual(harness.posts.count, 1, "a paused song is not replaced by the logo")
+        XCTAssertEqual(hold.scheduled.count, 2, "the hold started again")
+
+        // Playing again with the clock still invalid: the fresh hold now runs out.
+        hold.playing = true
+        hold.date.addTimeInterval(5.1)
+        publisher.receive(faulty(generation, reason: "player clock: mediaProgressionDiscontinuity"))
+        XCTAssertEqual(harness.posts.count, 2)
+        XCTAssertEqual(harness.posts.last.flatMap(title), "")
+    }
+
+    func testOtherReasonsAndNoSongYetAreNotHeld() throws {
+        let occurrence = try realOccurrence()
+        let generation = UUID(), hold = HoldHarness()
+        let publisher = holdPublisher(hold, generation: generation)
+
+        // Nothing is showing yet, so there is nothing to hold.
+        publisher.receive(faulty(generation, reason: "player clock: missingPair"))
+        XCTAssertEqual(harness.posts.count, 1)
+        XCTAssertTrue(hold.scheduled.isEmpty)
+
+        // A song is up, but this is not a transient fault.
+        publisher.receive(snapshot(generation: generation, trigger: .playerSample, occurrence: occurrence))
+        publisher.receive(faulty(generation, reason: "alignment unavailable: noHistory"))
+        XCTAssertEqual(harness.posts.count, 3)
+        XCTAssertTrue(hold.scheduled.isEmpty)
+    }
+
+    func testEndedGenerationIgnoresAFiringHoldTimer() throws {
+        let occurrence = try realOccurrence()
+        let generation = UUID(), hold = HoldHarness()
+        let publisher = holdPublisher(hold, generation: generation)
+        publisher.receive(snapshot(generation: generation, trigger: .playerSample, occurrence: occurrence))
+        publisher.receive(faulty(generation))
+        state.endApplying(stationId: station, generation: generation)
+        let posts = harness.posts.count
+
+        hold.fire?()
+
+        XCTAssertEqual(harness.posts.count, posts)
+        XCTAssertNil(state.current)
+    }
+
     // MARK: - 3 Guards
 
     func testSnapshotFromAnotherGenerationIsRejected() throws {

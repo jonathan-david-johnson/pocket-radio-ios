@@ -147,6 +147,7 @@ final class RadioPlaybackSession {
         }
 
         Self.active = self
+        publisher?.isPlayerPlaying = { [weak self] in self?.lastStatus == .playing }
         if mode == .apply { alignedState.beginApplying(stationId: stationId, generation: generation) }
         emit("[align] session start gen=\(AlignmentProbeLog.shortID(generation)) "
             + "endpoint=\(AlignmentProbeLog.safeEndpoint(endpoint)) "
