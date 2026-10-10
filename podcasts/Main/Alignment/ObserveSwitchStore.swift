@@ -8,14 +8,24 @@ enum AlignmentPollDriver: Equatable {
     case playbackTicks
 }
 
-/// Debug-only Observe switch for the KCRW alignment probe. Off by default. In Release builds
-/// it is always off and cannot be set. Tests must inject `UserDefaults(suiteName:)`.
+/// Which KCRW alignment behavior a station start uses. `observe` plays the measured HLS stream
+/// and records a comparison without publishing. `apply` also drives the aligned song to the
+/// lock screen and players.
+enum AlignmentMode: String, CaseIterable, Equatable {
+    case off
+    case observe
+    case apply
+}
+
+/// Debug-only alignment mode for the KCRW probe. Off by default. In Release builds it is always
+/// off and cannot be set. Tests must inject `UserDefaults(suiteName:)`. The type keeps its
+/// Observe-era name because `PlaybackItem` still refers to it.
 final class ObserveSwitchStore {
-    static let key = "PocketRadio.alignment.observe"
+    static let key = "PocketRadio.alignment.mode"
     static let pollDriverKey = "PocketRadio.alignment.pollDriver"
 
     /// The app's runtime store. Under XCTest it is an emptied private suite, because the test host
-    /// is the app: a switch left on in the simulator must not change host-app tests.
+    /// is the app: a mode left on in the simulator must not change host-app tests.
     static let shared = ObserveSwitchStore(defaults: runtimeDefaults())
 
     static func runtimeDefaults(environment: [String: String] = ProcessInfo.processInfo.environment) -> UserDefaults {
@@ -32,20 +42,24 @@ final class ObserveSwitchStore {
         self.defaults = defaults
     }
 
-    var isObserveOn: Bool {
+    var mode: AlignmentMode {
         get {
             #if DEBUG
-            return defaults.bool(forKey: Self.key)
+            return defaults.string(forKey: Self.key).flatMap(AlignmentMode.init(rawValue:)) ?? .off
             #else
-            return false
+            return .off
             #endif
         }
         set {
             #if DEBUG
-            defaults.set(newValue, forKey: Self.key)
+            defaults.set(newValue.rawValue, forKey: Self.key)
             #endif
         }
     }
+
+    /// True when the mode is Observe or Apply. Kept for `PlaybackItem`'s endpoint choice, which
+    /// applies to both.
+    var isObserveOn: Bool { mode != .off }
 
     /// Debug-only. Release always uses `.timer`.
     var pollDriver: AlignmentPollDriver {

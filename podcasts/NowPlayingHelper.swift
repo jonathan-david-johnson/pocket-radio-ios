@@ -103,6 +103,11 @@ class NowPlayingHelper {
     /// `.remote` — mirrors the guard pattern in
     /// `PlaybackManager.resolveRadioArtworkForLockScreen`.
     private class func setRadioArtwork(for station: RadioStation, size: Int, into info: inout [String: AnyObject]) {
+        // Apply: a rebuild keeps the current aligned song's image instead of reverting to the logo.
+        if let aligned = AlignedConsumers.artworkForRebuild(stationId: station.stationId) {
+            info[MPMediaItemPropertyArtwork] = artwork(for: aligned, size: size)
+            return
+        }
         let faviconUrl = RadioFavoritesCache.shared.snapshot().first { $0.stationId == station.stationId }?.faviconUrl
         let source = RadioArtworkSource.resolve(logoAsset: station.logoAsset, faviconUrl: faviconUrl)
 

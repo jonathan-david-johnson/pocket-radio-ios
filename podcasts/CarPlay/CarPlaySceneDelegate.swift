@@ -71,7 +71,10 @@ class CarPlaySceneDelegate: CustomObserver, CPTemplateApplicationSceneDelegate, 
             let info = MPNowPlayingInfoCenter.default().nowPlayingInfo
             let title = (info?[MPMediaItemPropertyTitle] as? String) ?? ""
             let artist = (info?[MPMediaItemPropertyArtist] as? String) ?? ""
-            let album = RadioTracklistService.shared.cached(stationId: station.uuid)?.first?.album
+            // Apply: the aligned song's album, never the tracklist top (ADR 0004).
+            let album = AlignedConsumers.isApplying(stationId: station.uuid)
+                ? AlignedConsumers.entry(for: station.uuid)?.album
+                : RadioTracklistService.shared.cached(stationId: station.uuid)?.first?.album
 
             NowPlayingHelper.setRadioTrackInfo(
                 stationId: station.uuid,

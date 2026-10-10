@@ -99,10 +99,10 @@ final class AlignmentMonitorSummaryTests: XCTestCase {
         for t in 15 ..< 30 { samples.append(sample(Double(t), media: Double(t - 5))) }
         let w = compute(samples, end: 30).speedWindows
         XCTAssertEqual(w.count, 1)
-        XCTAssertEqual(w[0].start, 0)
-        XCTAssertEqual(w[0].elapsedSeconds, 9 + 14)
-        XCTAssertEqual(w[0].mediaSeconds, 9 + 14)
-        XCTAssertEqual(w[0].ratio ?? 0, 1.0, accuracy: 1e-9)
+        XCTAssertEqual(w[safe: 0]?.start, 0)
+        XCTAssertEqual(w[safe: 0]?.elapsedSeconds, 9 + 14)
+        XCTAssertEqual(w[safe: 0]?.mediaSeconds, 9 + 14)
+        XCTAssertEqual(w[safe: 0]?.ratio ?? .nan, 1.0, accuracy: 1e-9)
     }
 
     func testSpeedWindowsAcrossTwoWindows() {
@@ -114,19 +114,19 @@ final class AlignmentMonitorSummaryTests: XCTestCase {
 
     func testSpeedWindowWithNoContributionHasNilRatio() {
         let w = compute([sample(0), sample(1, playing: false)], end: 1).speedWindows
-        XCTAssertTrue(w.isEmpty || w[0].ratio == nil)
+        XCTAssertTrue(w.isEmpty || w[safe: 0]?.ratio == nil)
     }
 
     func testSpeedWindowIgnoresNonFiniteMedia() {
         let samples = [sample(0), AlignmentMonitorSample(elapsed: 1, mediaSeconds: nil, programDate: nil, rate: 1, isPlaying: true), sample(2)]
         let w = compute(samples, end: 2).speedWindows
-        XCTAssertTrue(w.isEmpty || w[0].elapsedSeconds == 0)
+        XCTAssertTrue(w.isEmpty || w[safe: 0]?.elapsedSeconds == 0)
     }
 
     func testDriftingRatioIsReported() {
         let samples = (0 ..< 300).map { sample(Double($0), media: Double($0) * 1.05) }
         let w = compute(samples, end: 300).speedWindows
-        XCTAssertEqual(w[0].ratio ?? 0, 1.05, accuracy: 1e-9)
+        XCTAssertEqual(w[safe: 0]?.ratio ?? .nan, 1.05, accuracy: 1e-9)
     }
 
     // MARK: - Locked-run verdict
@@ -286,8 +286,8 @@ final class AlignmentMonitorSummaryTests: XCTestCase {
         let lines = cleanRun().formattedLines()
         XCTAssertFalse(lines.isEmpty)
         XCTAssertTrue(lines.allSatisfy { $0.hasPrefix("[align] summary ") && !$0.contains("http") })
-        XCTAssertTrue(lines[0].contains("samples=1800"), lines[0])
-        XCTAssertTrue(lines[0].contains("polls=60"), lines[0])
+        XCTAssertTrue(lines[safe: 0]?.contains("samples=1800") == true, lines.first ?? "")
+        XCTAssertTrue(lines[safe: 0]?.contains("polls=60") == true, lines.first ?? "")
     }
 
     // A pair of playing samples that straddles a stall without ticks must not count toward speed.

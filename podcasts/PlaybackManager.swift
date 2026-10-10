@@ -527,6 +527,12 @@ class PlaybackManager: ServerPlaybackDelegate {
         let title = (info[RadioMetadataNotificationKey.title] as? String) ?? ""
         let artist = (info[RadioMetadataNotificationKey.artist] as? String) ?? ""
         let icyAlbum = info[RadioMetadataNotificationKey.album] as? String
+        // Apply: the aligned adapter is the single writer. Only its posts are honored.
+        let applying = AlignedConsumers.isApplying(stationId: stationId)
+        let aligned = AlignedConsumers.isAligned(info)
+        guard applying == aligned else { return }
+        // Each aligned post is a change (the adapter dedupes), so always re-resolve its artwork.
+        if applying { lastResolvedRadioKey = nil }
         if let station = RadioStationRegistry.shared.station(for: stationId),
            currentEpisode?.uuid == stationId {
             let stationName = station.displayableTitle()
@@ -535,11 +541,12 @@ class PlaybackManager: ServerPlaybackDelegate {
             // The ICY frame is the freshest source and, once parsed, already
             // carries artist and album. The cached tracklist only fills gaps —
             // it can lag the stream by a song, so it never overrides a field ICY
-            // supplied.
-            let resolvedArtist = artist.isEmpty ? (tracklistEntry?.artist ?? "") : artist
-            let album = icyAlbum ?? tracklistEntry?.album
-            DispatchQueue.main.async {
-                NowPlayingHelper.setRadioTrackInfo(stationId: stationId, trackTitle: title, artist: resolvedArtist, album: album, stationName: stationName)
+            // supplied. An aligned post never borrows from the tracklist.
+            if let write = AlignedConsumers.trackWrite(applying: applying, aligned: aligned, title: title, artist: artist,
+                                                       icyAlbum: icyAlbum, tracklistTop: tracklistEntry) {
+                DispatchQueue.main.async {
+                    NowPlayingHelper.setRadioTrackInfo(stationId: stationId, trackTitle: write.title, artist: write.artist, album: write.album, stationName: stationName)
+                }
             }
         }
         resolveRadioArtworkForLockScreen(stationId: stationId, icyArtist: artist, icyTitle: title)
@@ -548,6 +555,8 @@ class PlaybackManager: ServerPlaybackDelegate {
     @objc private func handleRadioTracklistRefreshed(_ notification: Notification) {
         guard let info = notification.userInfo,
               let stationId = info[RadioMetadataNotificationKey.stationId] as? String else { return }
+        // Apply: the aligned song, not the tracklist top, owns the artwork.
+        if AlignedConsumers.isApplying(stationId: stationId) { return }
         // No ICY info on this path — let helper pick top tracklist entry.
         resolveRadioArtworkForLockScreen(stationId: stationId, icyArtist: "", icyTitle: "")
     }
@@ -559,11 +568,32 @@ class PlaybackManager: ServerPlaybackDelegate {
         // Non-enhanced stations (no curated tracklistUrl) stay on the station logo.
         guard let enhancement = CuratedStationsLoader.enhancementsByUUID[stationId],
               enhancement.tracklistUrl != nil else { return }
-        guard let resolveEntry = TrackArtworkResolver.bestResolveEntry(stationId: stationId, icyArtist: icyArtist, icyTitle: icyTitle) else { return }
+        let applying = AlignedConsumers.isApplying(stationId: stationId)
+        guard let resolveEntry = TrackArtworkResolver.bestResolveEntry(stationId: stationId, icyArtist: icyArtist, icyTitle: icyTitle) else {
+            // Apply, unavailable: the station logo, never the previous song's art.
+            if applying, let logo = NowPlayingHelper.stationLogoImage(for: station) {
+                lastResolvedRadioKey = nil
+                DispatchQueue.main.async {
+                    guard self.currentEpisode?.uuid == stationId, AlignedConsumers.currentOccurrenceID(stationId: stationId) == nil else { return }
+                    NowPlayingHelper.setArtworkImage(logo)
+                }
+            }
+            return
+        }
+        // Apply: the occurrence this resolve is for. A late image for any other occurrence is dropped.
+        let occurrenceID = applying ? AlignedConsumers.currentOccurrenceID(stationId: stationId) : nil
 
-        let key = "\(stationId)\u{1F}\(resolveEntry.artist.lowercased())\u{1F}\(resolveEntry.title.lowercased())"
+        var key = "\(stationId)\u{1F}\(resolveEntry.artist.lowercased())\u{1F}\(resolveEntry.title.lowercased())"
+        if let occurrenceID { key += "\u{1F}\(occurrenceID)" }
         if key == lastResolvedRadioKey { return }
         lastResolvedRadioKey = key
+        // Apply: title and artwork must name one song, so show the logo until this song's art arrives.
+        if occurrenceID != nil, let logo = NowPlayingHelper.stationLogoImage(for: station) {
+            DispatchQueue.main.async {
+                guard self.lastResolvedRadioKey == key, self.currentEpisode?.uuid == stationId else { return }
+                NowPlayingHelper.setArtworkImage(logo)
+            }
+        }
 
         TrackArtworkResolver.shared.artworkURL(for: resolveEntry, station: station) { [weak self] url in
             guard let self else { return }
@@ -581,6 +611,7 @@ class PlaybackManager: ServerPlaybackDelegate {
                     guard self.lastResolvedRadioKey == key else { return }
                     DispatchQueue.main.async {
                         if let image = try? result.get().image {
+                            if let occurrenceID, !AlignedConsumers.storeArtwork(image, occurrenceID: occurrenceID) { return }
                             NowPlayingHelper.setArtworkImage(image)
                         } else if let logo = NowPlayingHelper.stationLogoImage(for: station) {
                             NowPlayingHelper.setArtworkImage(logo)

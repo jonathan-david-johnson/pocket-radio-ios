@@ -28,8 +28,11 @@ On the pinned physical device ("Jonathan iPhone", UDID
 - `make build_device` — build StagingDebug for that device
 - `make run_device` — build, install, and launch on it
 - `xcrun devicectl list devices` to confirm it is paired and available
+- **Install over the cable, not Wi-Fi.** The user prefers a wired install for speed. Before any install or launch, ask the user to connect and unlock the phone, then confirm the cable with
+  `xcrun devicectl device info details --device <id> | grep "Transport Type"` (`wired`, not `localNetwork`).
+  If it reports `localNetwork`, stop and ask again rather than installing over Wi-Fi. Never install or launch without asking first.
 - Launch with Debug launch arguments (each sets a `UserDefaults.standard` key for that launch only):
-  `xcrun devicectl device process launch --device <id> --terminate-existing com.jdj.pocketradio -- -PocketRadio.alignment.observe YES`.
+  `xcrun devicectl device process launch --device <id> --terminate-existing com.jdj.pocketradio -- -PocketRadio.alignment.mode apply` (mode is `off`, `observe` or `apply`).
   The `--` is required; without it `devicectl` parses the app's arguments as its own.
 - Pull the app's `FileLog` (`main.log` and `old.log`):
   `xcrun devicectl device copy from --device <id> --domain-type appDataContainer --domain-identifier com.jdj.pocketradio --source Documents/debug_log --destination <dir>`.

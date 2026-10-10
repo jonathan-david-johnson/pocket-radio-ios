@@ -2,8 +2,8 @@
 import Foundation
 import StreamSession
 
-/// Same-item decision and retained evidence for the Observe readout. Value type; nothing here
-/// is published to the listener. An unavailable state carries an explicit `reason` and no
+/// Same-item decision and retained evidence for the readout and the publication adapter. Value
+/// type; the snapshot itself publishes nothing. An unavailable state carries an explicit `reason` and no
 /// candidate: the feed top is shown as evidence only and is never used as a fallback.
 struct RadioAlignmentSnapshot: Equatable {
     let generation: UUID
@@ -12,6 +12,8 @@ struct RadioAlignmentSnapshot: Equatable {
     let feedTop: String?
     let candidate: String?
     let candidateID: OccurrenceID?
+    /// The selected feed row with its album and artwork, for the adapter. Nil when unavailable.
+    let selectedOccurrence: Occurrence?
     let songSeconds: Double?
     let mediaSeconds: Double?
     let programDate: Date?

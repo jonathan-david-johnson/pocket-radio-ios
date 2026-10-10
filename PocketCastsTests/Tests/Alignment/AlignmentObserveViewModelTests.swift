@@ -31,8 +31,11 @@ final class AlignmentObserveViewModelTests: XCTestCase {
         super.tearDown()
     }
 
+    private let alignedState = AlignedNowPlayingState()
+
     private func makeModel() -> AlignmentObserveViewModel {
-        AlignmentObserveViewModel(store: store, sessionProvider: { [unowned self] in provided }, timeZone: utc)
+        AlignmentObserveViewModel(store: store, sessionProvider: { [unowned self] in provided },
+                                  alignedState: alignedState, timeZone: utc)
     }
 
     private func makeSession() -> RadioPlaybackSession {
@@ -51,14 +54,14 @@ final class AlignmentObserveViewModelTests: XCTestCase {
         rows.first { $0.label == label }?.value
     }
 
-    func testObserveAndDriverDefaultOffAndPersistInSuite() {
+    func testModeAndDriverDefaultOffAndPersistInSuite() {
         let model = makeModel()
-        XCTAssertFalse(model.isObserveOn)
+        XCTAssertEqual(model.mode, .off)
         XCTAssertEqual(model.pollDriver, .timer)
-        model.isObserveOn = true
+        model.mode = .apply
         model.pollDriver = .playbackTicks
         let reread = ObserveSwitchStore(defaults: UserDefaults(suiteName: suiteName)!)
-        XCTAssertTrue(reread.isObserveOn)
+        XCTAssertEqual(reread.mode, .apply)
         XCTAssertEqual(reread.pollDriver, .playbackTicks)
     }
 
@@ -116,5 +119,24 @@ final class AlignmentObserveViewModelTests: XCTestCase {
         XCTAssertEqual(value(model.monitorRows, "Longest sample gap"), "1.0 s")
         XCTAssertEqual(value(model.monitorRows, "Verdict"), "FAIL")
         XCTAssertTrue(model.verdictLines.contains { $0.contains("poll attempts 0 below 58") })
+    }
+
+    func testReadoutShowsPublishedStateNoneSongAndUnavailable() {
+        _ = makeSession()
+        let model = makeModel()
+        model.refresh()
+        XCTAssertEqual(value(model.sessionRows, "Published"), "none")
+
+        let gen = UUID()
+        alignedState.beginApplying(stationId: "st", generation: gen)
+        alignedState.publish(.unavailable(stationId: "st", reason: "no history"), stationId: "st", generation: gen)
+        model.refresh()
+        XCTAssertEqual(value(model.sessionRows, "Published"), "unavailable: no history")
+
+        let song = AlignedSong(stationId: "st", occurrenceID: "o1", title: "T", artist: "A", album: nil,
+                               artworkURL: nil, generation: gen)
+        alignedState.publish(.song(song), stationId: "st", generation: gen)
+        model.refresh()
+        XCTAssertEqual(value(model.sessionRows, "Published"), "song: T — A")
     }
 }

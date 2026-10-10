@@ -16,6 +16,7 @@ enum RadioMetadataNotificationKey {
     static let artist = "artist"
     static let album = "album"              // nil unless the ICY frame carried one
     static let albumArtURL = "albumArtURL"  // reserved; always nil in M6
+    static let aligned = "aligned"          // true when posted by the KCRW alignment adapter
 }
 
 final class RadioMetadataObserver: NSObject, AVPlayerItemMetadataOutputPushDelegate {

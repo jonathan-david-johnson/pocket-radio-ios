@@ -114,6 +114,11 @@ final class TrackArtworkResolver {
     static func bestResolveEntry(stationId: String,
                                  icyArtist: String,
                                  icyTitle: String) -> TracklistEntry? {
+        // An Apply session owns the station's song: the aligned entry, or nil when unavailable.
+        // Never the cached tracklist top and never ICY.
+        if AlignedConsumers.isApplying(stationId: stationId) {
+            return AlignedConsumers.entry(for: stationId)
+        }
         let cached = RadioTracklistService.shared.cached(stationId: stationId)
         let trimmedArtist = icyArtist.trimmingCharacters(in: .whitespaces)
         let trimmedTitle = icyTitle.trimmingCharacters(in: .whitespaces)

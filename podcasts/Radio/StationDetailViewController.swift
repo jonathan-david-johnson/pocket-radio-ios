@@ -79,6 +79,10 @@ class StationDetailViewController: SimpleNotificationsViewController {
     private var entries: [TracklistEntry] = []
     private var icyTitle: String = ""
     private var icyArtist: String = ""
+    /// Apply: the aligned song's history entry, marked in the list. Nil when unavailable or not applying.
+    private var alignedEntry: TracklistEntry?
+    private var showingAligned = false
+    private var isApplying: Bool { AlignedConsumers.isApplying(stationId: station.uuid) }
     private var pendingTracklistTask: Task<Void, Never>?
     private var tracklistRefreshTask: Task<Void, Never>?
 
@@ -176,6 +180,7 @@ class StationDetailViewController: SimpleNotificationsViewController {
             self.entries = Array(cached.prefix(5))
             self.tracklistTable.reloadData()
         }
+        refreshAlignedDisplay()
 
         addCustomObserver(Constants.Notifications.playbackStarted, selector: #selector(playbackChanged))
         addCustomObserver(Constants.Notifications.playbackPaused, selector: #selector(playbackChanged))
@@ -197,6 +202,7 @@ class StationDetailViewController: SimpleNotificationsViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         themeDidChange()
+        refreshAlignedDisplay()
         if station.tracklistUrl != nil {
             startTracklistRefreshLoop()
         }
@@ -357,6 +363,7 @@ class StationDetailViewController: SimpleNotificationsViewController {
 
     @objc private func playbackChanged() {
         updatePlayButton()
+        refreshAlignedDisplay()
     }
 
     @objc private func handleNowPlayingChange(_ notification: Notification) {
@@ -367,9 +374,19 @@ class StationDetailViewController: SimpleNotificationsViewController {
                   stationId == station.uuid else { return }
             let title = (info[RadioMetadataNotificationKey.title] as? String) ?? ""
             let artist = (info[RadioMetadataNotificationKey.artist] as? String) ?? ""
-            self.icyTitle = title
-            self.icyArtist = artist
-            self.updateNowPlayingLabels()
+            // Apply: only the aligned adapter's posts count, and the labels read its state.
+            let aligned = AlignedConsumers.isAligned(info)
+            guard self.isApplying == aligned else {
+                if aligned { self.refreshAlignedDisplay() }   // a late post after the session ended: clear
+                return
+            }
+            if self.isApplying {
+                self.refreshAlignedDisplay()
+            } else {
+                self.icyTitle = title
+                self.icyArtist = artist
+                self.updateNowPlayingLabels()
+            }
 
             self.pendingTracklistTask?.cancel()
             self.pendingTracklistTask = Task { [weak self] in
@@ -378,6 +395,29 @@ class StationDetailViewController: SimpleNotificationsViewController {
                 await self.refetchTracklist()
             }
         }
+    }
+
+    /// Apply: labels show the aligned song (the station name when unavailable) and the history marks
+    /// its row. No-op for a station that is not applying.
+    private func refreshAlignedDisplay() {
+        updateIdentifyButton()
+        guard let display = AlignedConsumers.stationDisplay(stationId: station.uuid, stationName: station.displayableTitle()) else {
+            alignedEntry = nil
+            if showingAligned {
+                showingAligned = false
+                icyTitle = ""
+                icyArtist = ""
+                updateNowPlayingLabels()
+                tracklistTable.reloadData()
+            }
+            return
+        }
+        showingAligned = true
+        icyTitle = display.title
+        icyArtist = display.artist
+        alignedEntry = display.markedEntry
+        updateNowPlayingLabels()
+        tracklistTable.reloadData()
     }
 
     private func updateNowPlayingLabels() {
@@ -393,7 +433,7 @@ class StationDetailViewController: SimpleNotificationsViewController {
 
     private func updateIdentifyButton() {
         let hasTracklist = station.tracklistUrl != nil
-        identifyButton.isHidden = !hasTracklist
+        identifyButton.isHidden = !hasTracklist || isApplying
         updateIdentifyButtonTitle()
     }
 
@@ -406,7 +446,7 @@ class StationDetailViewController: SimpleNotificationsViewController {
     }
 
     private func identifyTrack() {
-        guard !isIdentifying,
+        guard !isIdentifying, !isApplying,
               let url = URL(string: station.streamUrl) else { return }
         isIdentifying = true
         updateIdentifyButtonTitle()
@@ -454,14 +494,11 @@ class StationDetailViewController: SimpleNotificationsViewController {
         guard let url = station.tracklistUrl, !url.isEmpty else { return }
         do {
             let fresh = try await RadioTracklistService.shared.fetch(stationId: station.uuid, url: url)
-            let previousTopKey = entries.first.map { lyricSync.songKey(for: $0) }
-            self.entries = Array(fresh.prefix(5))
-            self.tracklistTable.reloadData()
+            let newTop = adoptFetchedTracklist(fresh)
             self.lyricSync.load(entry: self.entries.first)
             // Sync car/lockscreen when tracklist detects a new top song (covers stations
             // where ICY is absent or fires late).
-            if let newTop = self.entries.first,
-               lyricSync.songKey(for: newTop) != previousTopKey,
+            if let newTop,
                PlaybackManager.shared.currentEpisode?.uuid == station.uuid {
                 NowPlayingHelper.setRadioTrackInfo(
                     stationId: station.uuid,
@@ -477,6 +514,31 @@ class StationDetailViewController: SimpleNotificationsViewController {
             }
         }
     }
+
+    /// Replaces the history list. Returns the new top song when it differs from the previous top, so
+    /// the caller can sync the lock screen.
+    func adoptFetchedTracklist(_ fresh: [TracklistEntry]) -> TracklistEntry? {
+        let previousTopKey = entries.first.map { lyricSync.songKey(for: $0) }
+        self.entries = Array(fresh.prefix(5))
+        self.tracklistTable.reloadData()
+        // Apply: the aligned adapter owns the lock screen, so the feed top is never synced to it.
+        guard !isApplying, let newTop = entries.first, lyricSync.songKey(for: newTop) != previousTopKey else { return nil }
+        return newTop
+    }
+
+    #if DEBUG
+    // Test seams: what the screen shows, read through the real table and labels.
+    var _entriesForTesting: [TracklistEntry] { entries }
+    var _nowPlayingLabelsForTesting: (title: String?, titleHidden: Bool, artist: String?, artistHidden: Bool) {
+        (nowPlayingTitleLabel.text, nowPlayingTitleLabel.isHidden, nowPlayingArtistLabel.text, nowPlayingArtistLabel.isHidden)
+    }
+    var _identifyHiddenForTesting: Bool { identifyButton.isHidden }
+    var _markedRowsForTesting: [Int] {
+        (0..<entries.count).filter {
+            tableView(tracklistTable, cellForRowAt: IndexPath(row: $0, section: 0)).accessoryView != nil
+        }
+    }
+    #endif
 
     private func updatePlayButton() {
         let isCurrentStation = PlaybackManager.shared.currentEpisode?.uuid == station.uuid
@@ -563,10 +625,21 @@ extension StationDetailViewController: UITableViewDataSource {
         entries.count
     }
 
+    private static func alignedMarkView() -> UIView {
+        let view = UIImageView(image: UIImage(systemName: "speaker.wave.2.fill"))
+        view.tintColor = AppTheme.colorForStyle(.primaryInteractive01)
+        view.accessibilityLabel = "Now playing"
+        view.sizeToFit()
+        return view
+    }
+
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: TracklistCell.reuseIdentifier, for: indexPath) as! TracklistCell
         let fallback = logoView.image
         cell.configure(with: entries[indexPath.row], fallbackArt: fallback)
+        // Apply: mark the aligned song's row (feed order unchanged), not row zero.
+        cell.accessoryView = AlignedConsumers.markedRow(in: entries, aligned: alignedEntry) == indexPath.row
+            ? Self.alignedMarkView() : nil
         return cell
     }
 }
@@ -617,6 +690,8 @@ extension StationDetailViewController: LyricSyncControllerDelegate {
     }
 
     func lyricSyncController(_ c: LyricSyncController, didUpdateNowPlayingAlbum text: String) {
+        // Apply: the aligned adapter owns the album field (the lyrics stay on screen).
+        guard !isApplying else { return }
         NowPlayingHelper.setRadioAlbumTitle(text)
     }
 }

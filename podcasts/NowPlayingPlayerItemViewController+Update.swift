@@ -288,6 +288,11 @@ extension NowPlayingPlayerItemViewController {
 
         guard let entry = TrackArtworkResolver.bestResolveEntry(stationId: radio.uuid, icyArtist: "", icyTitle: "") else {
             // No cached tracklist + no ICY yet → leave station name in place.
+            // Apply, unavailable: reset to the station's own title, not the previous song.
+            if AlignedConsumers.isApplying(stationId: radio.uuid) {
+                episodeName.text = playingEpisode.displayableTitle()
+                podcastName.text = playingEpisode.subTitle()
+            }
             return
         }
 

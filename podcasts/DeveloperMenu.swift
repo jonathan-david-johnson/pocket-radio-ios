@@ -346,7 +346,7 @@ struct DeveloperMenu: View {
 
             #if DEBUG && !os(watchOS) && !APPCLIP && !os(tvOS)
             Section {
-                NavigationLink("KCRW alignment (Observe)") { AlignmentObserveView() }
+                NavigationLink("KCRW alignment") { AlignmentObserveView() }
             }
             #endif
 

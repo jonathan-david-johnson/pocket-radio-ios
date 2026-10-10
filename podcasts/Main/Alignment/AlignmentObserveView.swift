@@ -2,8 +2,8 @@
 import SwiftUI
 import PocketCastsUtils
 
-/// Reads the active alignment session for the Debug screen. It never assigns `onSnapshot`
-/// (the session's owner does) and publishes nothing to the listener.
+/// Reads the active alignment session and the published state for the Debug screen. It never
+/// assigns `onSnapshot` (the session's owner does) and publishes nothing to the listener.
 @MainActor
 final class AlignmentObserveViewModel: ObservableObject {
     struct Row: Equatable {
@@ -13,6 +13,7 @@ final class AlignmentObserveViewModel: ObservableObject {
 
     private let store: ObserveSwitchStore
     private let sessionProvider: @MainActor () -> RadioPlaybackSession?
+    private let alignedState: AlignedNowPlayingState
     private let timeZone: TimeZone
 
     @Published private(set) var statusText: String? = "No active session"
@@ -22,15 +23,26 @@ final class AlignmentObserveViewModel: ObservableObject {
 
     init(store: ObserveSwitchStore = .shared,
          sessionProvider: @escaping @MainActor () -> RadioPlaybackSession? = { RadioPlaybackSession.active },
+         alignedState: AlignedNowPlayingState = .shared,
          timeZone: TimeZone = .current) {
         self.store = store
         self.sessionProvider = sessionProvider
+        self.alignedState = alignedState
         self.timeZone = timeZone
     }
 
-    var isObserveOn: Bool {
-        get { store.isObserveOn }
-        set { objectWillChange.send(); store.isObserveOn = newValue }
+    var mode: AlignmentMode {
+        get { store.mode }
+        set { objectWillChange.send(); store.mode = newValue }
+    }
+
+    /// What the adapter last published for the listener: a song, the unavailable state, or none.
+    var publishedText: String {
+        switch alignedState.current {
+        case .song(let song)?: return "song: \(song.title) — \(song.artist)"
+        case .unavailable(_, let reason)?: return "unavailable: \(reason)"
+        case nil: return "none"
+        }
     }
 
     var pollDriver: AlignmentPollDriver {
@@ -57,6 +69,7 @@ final class AlignmentObserveViewModel: ObservableObject {
             Row(label: "Candidate", value: s.candidate ?? "none"),
             Row(label: "Song seconds", value: Self.seconds(s.songSeconds)),
             Row(label: "Reason", value: s.reason),
+            Row(label: "Published", value: publishedText),
             Row(label: "Feed status", value: s.feedStatus),
             Row(label: "Cache age", value: Self.seconds(s.cacheAgeSeconds, suffix: " s")),
             Row(label: "History count", value: "\(s.historyCount)"),
@@ -112,13 +125,18 @@ struct AlignmentObserveView: View {
     var body: some View {
         List {
             Section {
-                Toggle("Observe", isOn: Binding(get: { model.isObserveOn }, set: { model.isObserveOn = $0 }))
+                Picker("Mode", selection: Binding(get: { model.mode }, set: { model.mode = $0 })) {
+                    Text("Off").tag(AlignmentMode.off)
+                    Text("Observe").tag(AlignmentMode.observe)
+                    Text("Apply").tag(AlignmentMode.apply)
+                }
+                .pickerStyle(.segmented)
                 Picker("Poll driver", selection: Binding(get: { model.pollDriver }, set: { model.pollDriver = $0 })) {
                     Text("Timer").tag(AlignmentPollDriver.timer)
                     Text("Playback ticks").tag(AlignmentPollDriver.playbackTicks)
                 }
             } footer: {
-                Text("Takes effect the next time a station starts. Observe plays KCRW's HLS stream, which has no song titles in the player. Nothing is published.")
+                Text("Takes effect the next time a station starts. Observe and Apply play KCRW's HLS stream. Observe publishes nothing; Apply drives the lock screen and players from the aligned song.")
             }
 
             Section("Active session") {

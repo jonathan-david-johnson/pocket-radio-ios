@@ -48,18 +48,28 @@ enum KCRWAlignmentConfiguration {
         ineligibilityReason(name: name, streamURL: streamURL) == nil
     }
 
-    /// The measured HLS endpoint, only when Observe is on and the episode is an eligible radio
-    /// station. The player may receive a SQLite `Episode` shim instead of the `RadioStation`,
-    /// so a station lookup by uuid backs the direct cast. The saved stream URL is never changed.
+    /// The measured HLS endpoint, only when the mode is Observe or Apply and the episode is an
+    /// eligible radio station. The player may receive a SQLite `Episode` shim instead of the
+    /// `RadioStation`, so a station lookup by uuid backs the direct cast. The saved stream URL is
+    /// never changed.
+    static func endpointOverride(
+        for episode: BaseEpisode,
+        mode: AlignmentMode,
+        stationLookup: (String) -> RadioStation? = { RadioStationRegistry.shared.station(for: $0) }
+    ) -> URL? {
+        guard mode != .off else { return nil }
+        guard let station = (episode as? RadioStation) ?? stationLookup(episode.uuid) else { return nil }
+        guard isEligible(name: station.title, streamURL: station.streamUrl) else { return nil }
+        return measuredEndpoint
+    }
+
+    /// Bool form for callers that only know whether alignment is on. Treated as Observe.
     static func endpointOverride(
         for episode: BaseEpisode,
         observeOn: Bool,
         stationLookup: (String) -> RadioStation? = { RadioStationRegistry.shared.station(for: $0) }
     ) -> URL? {
-        guard observeOn else { return nil }
-        guard let station = (episode as? RadioStation) ?? stationLookup(episode.uuid) else { return nil }
-        guard isEligible(name: station.title, streamURL: station.streamUrl) else { return nil }
-        return measuredEndpoint
+        endpointOverride(for: episode, mode: observeOn ? .observe : .off, stationLookup: stationLookup)
     }
 }
 #endif

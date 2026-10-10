@@ -4,11 +4,12 @@ import Foundation
 import PocketCastsUtils
 import StreamSession
 
-/// Observe-only owner of one `AVPlayerItem` for KCRW alignment. It samples the player once a
-/// second, keeps the StreamSession core, runs one feed poller, records the monitor data, and
-/// writes `[align]` log lines. It publishes nothing: no titles, artwork, lyrics or Now Playing
-/// fields, and no notifications to the player UI. Ported from the menubar session without its
-/// recorder, markers, title paths or apply gate.
+/// Owner of one `AVPlayerItem` for KCRW alignment. It samples the player once a second, keeps the
+/// StreamSession core, runs one feed poller, records the monitor data, and writes `[align]` log
+/// lines. In Observe it publishes nothing. In Apply it registers the station with
+/// `AlignedNowPlayingState` and hands every snapshot to `AlignedNowPlayingPublisher`, the only
+/// path to the lock screen and players. It never writes Now Playing fields, artwork or lyrics
+/// itself.
 ///
 /// Main-actor isolated. `DefaultPlayer` is not, so it goes through `startOnMain` and
 /// `stopOnMain`.
@@ -30,6 +31,8 @@ final class RadioPlaybackSession {
     let item: AVPlayerItem
     let endpoint: URL
     let driver: AlignmentPollDriver
+    let mode: AlignmentMode
+    let stationId: String
     /// Readout callback. Cleared on stop.
     var onSnapshot: ((RadioAlignmentSnapshot) -> Void)?
 
@@ -51,6 +54,8 @@ final class RadioPlaybackSession {
     private let fetch: Fetch
     private let feedClient: KCRWFeedClient?
     private let remove: Remove
+    private let alignedState: AlignedNowPlayingState
+    private let publisher: AlignedNowPlayingPublisher?
     private let startedAt: TimeInterval
     private var state = SessionState(historyPolicy: KCRWAlignmentConfiguration.historyPolicy,
                                      selectionPolicy: KCRWAlignmentConfiguration.selectionPolicy,
@@ -78,6 +83,10 @@ final class RadioPlaybackSession {
          generation: UUID = UUID(),
          endpoint: URL,
          driver: AlignmentPollDriver = .timer,
+         mode: AlignmentMode = .observe,
+         stationId: String = "",
+         alignedState: AlignedNowPlayingState = .shared,
+         post: AlignedNowPlayingPublisher.Post? = nil,
          now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          emit: @escaping (String) -> Void = { FileLog.shared.addMessage($0) },
          flush: @escaping () -> Void = { FileLog.shared.forceFlush() },
@@ -90,6 +99,20 @@ final class RadioPlaybackSession {
         self.generation = generation
         self.endpoint = endpoint
         self.driver = driver
+        self.mode = mode
+        self.stationId = stationId
+        self.alignedState = alignedState
+        if mode == .apply {
+            if let post {
+                publisher = AlignedNowPlayingPublisher(stationId: stationId, generation: generation,
+                                                       state: alignedState, post: post, emit: emit)
+            } else {
+                publisher = AlignedNowPlayingPublisher(stationId: stationId, generation: generation,
+                                                       state: alignedState, emit: emit)
+            }
+        } else {
+            publisher = nil
+        }
         self.now = now
         self.emit = emit
         self.flush = flush
@@ -105,7 +128,8 @@ final class RadioPlaybackSession {
         startedAt = now()
         snapshot = RadioAlignmentSnapshot(generation: generation,
                                           endpoint: AlignmentProbeLog.safeEndpoint(endpoint),
-                                          feedTop: nil, candidate: nil, candidateID: nil, songSeconds: nil,
+                                          feedTop: nil, candidate: nil, candidateID: nil, selectedOccurrence: nil,
+                                          songSeconds: nil,
                                           mediaSeconds: nil, programDate: nil,
                                           reason: RadioAlignmentSnapshot.initialReason,
                                           feedStatus: "not requested", cacheAgeSeconds: nil, historyCount: 0,
@@ -123,9 +147,10 @@ final class RadioPlaybackSession {
         }
 
         Self.active = self
+        if mode == .apply { alignedState.beginApplying(stationId: stationId, generation: generation) }
         emit("[align] session start gen=\(AlignmentProbeLog.shortID(generation)) "
             + "endpoint=\(AlignmentProbeLog.safeEndpoint(endpoint)) "
-            + "driver=\(driver == .timer ? "timer" : "ticks")")
+            + "driver=\(driver == .timer ? "timer" : "ticks") mode=\(mode.rawValue)")
         token = installer(player, Self.tickHandler(for: self))
         statusToken = observer(player, Self.statusHandler(for: self))
         if driver == .timer { startTimerPoller() }
@@ -135,14 +160,16 @@ final class RadioPlaybackSession {
 
     /// `DefaultPlayer` is not main-actor isolated. Creation happens on the main thread in
     /// practice; off main it logs and does nothing rather than crash.
-    nonisolated static func startOnMain(player: AVPlayer, item: AVPlayerItem, endpoint: URL) -> RadioPlaybackSession? {
+    nonisolated static func startOnMain(player: AVPlayer, item: AVPlayerItem, endpoint: URL,
+                                        mode: AlignmentMode, stationId: String) -> RadioPlaybackSession? {
         guard Thread.isMainThread else {
             FileLog.shared.addMessage("[align] session not started: not on the main thread")
             return nil
         }
         return MainActor.assumeIsolated {
             RadioPlaybackSession(player: player, item: item, endpoint: endpoint,
-                                 driver: ObserveSwitchStore.shared.pollDriver)
+                                 driver: ObserveSwitchStore.shared.pollDriver,
+                                 mode: mode, stationId: stationId)
         }
     }
 
@@ -193,6 +220,7 @@ final class RadioPlaybackSession {
         (statusToken as? NSKeyValueObservation)?.invalidate()
         statusToken = nil
         onSnapshot = nil
+        if mode == .apply { alignedState.endApplying(stationId: stationId, generation: generation) }
         if Self.active === self { Self.active = nil }
         emit("[align] session stop gen=\(AlignmentProbeLog.shortID(generation)) reason=\(reason) "
             + "samples=\(monitorSamples.count) polls=\(monitorPolls.count)")
@@ -308,6 +336,7 @@ final class RadioPlaybackSession {
         snapshot = RadioAlignmentSnapshot(generation: generation, endpoint: snapshot.endpoint,
                                           feedTop: latestFeedTop, candidate: candidate,
                                           candidateID: selection?.occurrence.id,
+                                          selectedOccurrence: selection?.occurrence,
                                           songSeconds: selection?.songSeconds,
                                           mediaSeconds: clock?.mediaSeconds, programDate: clock?.programDate,
                                           reason: reason, feedStatus: snapshot.feedStatus,
@@ -316,6 +345,7 @@ final class RadioPlaybackSession {
                                           lastPollElapsed: lastPollElapsed, clockValid: clockValid,
                                           trigger: decision.trigger)
         onSnapshot?(snapshot)
+        publisher?.receive(snapshot)
     }
 
     // MARK: - Feed
@@ -358,7 +388,9 @@ final class RadioPlaybackSession {
         }
         snapshot = RadioAlignmentSnapshot(generation: generation, endpoint: snapshot.endpoint,
                                           feedTop: latestFeedTop, candidate: snapshot.candidate,
-                                          candidateID: snapshot.candidateID, songSeconds: snapshot.songSeconds,
+                                          candidateID: snapshot.candidateID,
+                                          selectedOccurrence: snapshot.selectedOccurrence,
+                                          songSeconds: snapshot.songSeconds,
                                           mediaSeconds: snapshot.mediaSeconds, programDate: snapshot.programDate,
                                           reason: snapshot.reason, feedStatus: status,
                                           cacheAgeSeconds: result.cacheAgeSeconds,
@@ -366,6 +398,7 @@ final class RadioPlaybackSession {
                                           lastPollElapsed: requestedElapsed, clockValid: snapshot.clockValid,
                                           trigger: .feedUpdate)
         onSnapshot?(snapshot)
+        publisher?.receive(snapshot)
     }
 
     // MARK: - Poller

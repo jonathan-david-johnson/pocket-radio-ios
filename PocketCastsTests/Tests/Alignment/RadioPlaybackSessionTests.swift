@@ -327,7 +327,7 @@ final class RadioPlaybackSessionTests: XCTestCase {
         _ = makeSession(generation: generation)
 
         XCTAssertEqual(harness.lines.first,
-                       "[align] session start gen=ABCDEF12 endpoint=streams.kcrw.com/e24_aac/playlist.m3u8 driver=ticks")
+                       "[align] session start gen=ABCDEF12 endpoint=streams.kcrw.com/e24_aac/playlist.m3u8 driver=ticks mode=observe")
         for line in harness.lines {
             XCTAssertFalse(line.contains("secret"))
             XCTAssertFalse(line.contains("pw"))

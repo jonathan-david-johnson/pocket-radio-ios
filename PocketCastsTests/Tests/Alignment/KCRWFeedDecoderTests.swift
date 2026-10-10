@@ -32,26 +32,29 @@ final class KCRWFeedDecoderTests: XCTestCase {
 
     func testTimestampsAreMillisecondSnapped() throws {
         let rows = try decode(sample)
-        let base = ISO8601DateFormatter().date(from: "2026-01-02T03:04:05Z")!.timeIntervalSince1970
-        XCTAssertEqual(rows[0].playedAt!.timeIntervalSince1970, base + 0.123, accuracy: 0.0001)
-        XCTAssertEqual(rows[1].playedAt!.timeIntervalSince1970, base + 5, accuracy: 0.0001)
-        XCTAssertNil(rows[5].playedAt)
+        XCTAssertEqual(rows.count, 6)
+        let base = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-01-02T03:04:05Z")).timeIntervalSince1970
+        XCTAssertEqual(try XCTUnwrap(rows[safe: 0]?.playedAt).timeIntervalSince1970, base + 0.123, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(rows[safe: 1]?.playedAt).timeIntervalSince1970, base + 5, accuracy: 0.0001)
+        XCTAssertNil(rows[safe: 5]?.playedAt)
     }
 
     func testTextAndArtworkCleaning() throws {
         let rows = try decode(sample)
-        XCTAssertEqual(rows[0].artworkURL, "https://img.example/a.jpg")
-        XCTAssertEqual(rows[1].artworkURL, "https://img.example/b.jpg")
-        XCTAssertEqual(rows[1].title, "Song B")
-        XCTAssertNil(rows[4].title)
-        XCTAssertEqual(rows[5].artist, "")
-        XCTAssertNil(rows[2].artworkURL)
+        XCTAssertEqual(rows.count, 6)
+        XCTAssertEqual(rows[safe: 0]?.artworkURL, "https://img.example/a.jpg")
+        XCTAssertEqual(rows[safe: 1]?.artworkURL, "https://img.example/b.jpg")
+        XCTAssertEqual(rows[safe: 1]?.title, "Song B")
+        XCTAssertNil(rows[safe: 4]?.title)
+        XCTAssertEqual(rows[safe: 5]?.artist, "")
+        XCTAssertNil(rows[safe: 2]?.artworkURL)
     }
 
     func testTextIsCappedAt256() throws {
         let long = String(repeating: "x", count: 400)
         let rows = try decode("[{\"id\":1,\"title\":\"\(long)\",\"artist\":\"a\"}]")
-        XCTAssertEqual(rows[0].title?.count, 256)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[safe: 0]?.title?.count, 256)
     }
 
     func testWrongShapeThrows() {
