@@ -416,4 +416,38 @@ final class AlignedConsumersTests: XCTestCase {
         let vc = makeDetail(stationId: other, name: "Other")
         XCTAssertEqual(vc._markedRowsForTesting, [])
     }
+
+    // MARK: - Lyric position reader
+
+    func testLyricPositionIsTheAlignedSongsSecondsWhileApplying() {
+        publishSong("Aligned Song", "Aligned Artist", occ: "occ-1")
+        AlignedNowPlayingState.shared.recordSongSample(occurrenceID: "occ-1", songSeconds: 42, playing: false,
+                                                       stationId: applying, generation: generation)
+
+        let position = AlignedConsumers.lyricPosition(stationId: applying)
+        XCTAssertEqual(position?.occurrenceID, "occ-1")
+        XCTAssertEqual(position?.seconds, 42)
+        XCTAssertNil(AlignedConsumers.lyricPosition(stationId: other), "another station is not applying")
+    }
+
+    func testLyricPositionIsNilWhenUnavailableOrBeforeAnySample() {
+        XCTAssertNil(AlignedConsumers.lyricPosition(stationId: applying), "nothing published")
+
+        publishSong("Aligned Song", "Aligned Artist", occ: "occ-1")
+        XCTAssertNil(AlignedConsumers.lyricPosition(stationId: applying), "no valid sample yet")
+
+        AlignedNowPlayingState.shared.recordSongSample(occurrenceID: "occ-1", songSeconds: 42, playing: false,
+                                                       stationId: applying, generation: generation)
+        publishUnavailable()
+        XCTAssertNil(AlignedConsumers.lyricPosition(stationId: applying))
+    }
+
+    func testLyricPositionIsNilOnceTheSessionEnds() {
+        publishSong("Aligned Song", "Aligned Artist", occ: "occ-1")
+        AlignedNowPlayingState.shared.recordSongSample(occurrenceID: "occ-1", songSeconds: 42, playing: false,
+                                                       stationId: applying, generation: generation)
+        AlignedNowPlayingState.shared.endApplying(stationId: applying, generation: generation)
+
+        XCTAssertNil(AlignedConsumers.lyricPosition(stationId: applying))
+    }
 }

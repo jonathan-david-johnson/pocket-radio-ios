@@ -72,15 +72,27 @@ final class AlignedNowPlayingPublisher {
 
         guard let song = Self.song(from: snapshot, stationId: stationId) else {
             let reason = snapshot.candidateID == nil ? snapshot.reason : "selected row is not a song"
-            if holdsSong(for: reason) { return }
+            if holdsSong(for: reason) {
+                state.recordClockFault(playing: isPlayerPlaying(), stationId: stationId, generation: generation)
+                return
+            }
             publishUnavailable(reason: reason)
             return
         }
         endHold()
         // Whole-song comparison: a feed correction to the current song's fields republishes it.
-        guard last != .song(song) else { return }
-        guard state.publish(.song(song), stationId: stationId, generation: generation) else { return }
-        last = .song(song)
+        let changed = last != .song(song)
+        if changed {
+            guard state.publish(.song(song), stationId: stationId, generation: generation) else { return }
+            last = .song(song)
+        }
+        // After the publish, which restarts the position for a new occurrence, and before the post,
+        // so a reader woken by the post already sees this sample.
+        if let seconds = snapshot.songSeconds {
+            state.recordSongSample(occurrenceID: song.occurrenceID, songSeconds: seconds,
+                                   playing: isPlayerPlaying(), stationId: stationId, generation: generation)
+        }
+        guard changed else { return }
         emit("[align] publish song=\(song.title) — \(song.artist) occ=\(song.occurrenceID)")
         var userInfo: [AnyHashable: Any] = [
             RadioMetadataNotificationKey.stationId: stationId,
@@ -92,6 +104,12 @@ final class AlignedNowPlayingPublisher {
             userInfo[RadioMetadataNotificationKey.album] = album
         }
         post(userInfo)
+    }
+
+    /// The player started or stopped advancing between samples. Keeps the lyric position from
+    /// running on while paused or buffering.
+    func playerStatusChanged(playing: Bool) {
+        state.recordPlaying(playing, stationId: stationId, generation: generation)
     }
 
     /// True while a showing song should stay up through a brief clock fault. Starts the hold on the

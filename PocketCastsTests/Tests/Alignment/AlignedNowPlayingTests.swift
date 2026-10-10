@@ -14,6 +14,8 @@ final class AlignedNowPlayingTests: XCTestCase {
         var lines: [String] = []
         var posts: [[AnyHashable: Any]] = []
         var now: TimeInterval = 1000
+        /// The state's injected clock for the lyric position. Tests move it by hand.
+        var wall = Date(timeIntervalSince1970: 3_000_000_000)
         var sessions: [RadioPlaybackSession] = []
     }
 
@@ -28,7 +30,7 @@ final class AlignedNowPlayingTests: XCTestCase {
     override func setUp() {
         super.setUp()
         harness = Harness()
-        state = AlignedNowPlayingState()
+        state = AlignedNowPlayingState(now: { [harness] in harness.wall })
         item = AVPlayerItem(asset: AVMutableComposition())
         player = AVPlayer(playerItem: item)
     }
@@ -581,5 +583,236 @@ final class AlignedNowPlayingTests: XCTestCase {
 
         XCTAssertNil(state.artwork)
         XCTAssertFalse(state.setArtwork(image, occurrenceID: first))
+    }
+
+    // MARK: - Lyric position on the player's clock
+
+    private func lyricSeconds(_ stationId: String? = nil) -> (occurrenceID: String, seconds: Double)? {
+        state.lyricPosition(stationId: stationId ?? station)
+    }
+
+    /// 1 Session position
+    func testLyricPositionIsTheSessionsSongSecondsForTheCurrentOccurrence() throws {
+        let session = makeSession()
+        session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
+        tick(session, elapsed: 10, media: 50, program: songAProgram)
+
+        let published = try XCTUnwrap(publishedSong())
+        let position = try XCTUnwrap(lyricSeconds())
+        XCTAssertEqual(position.occurrenceID, published.occurrenceID)
+        let sessionSeconds = try XCTUnwrap(session.snapshot.songSeconds)
+        XCTAssertEqual(position.seconds, sessionSeconds, accuracy: 0.001)
+        XCTAssertEqual(position.seconds, 30, accuracy: 0.001, "song A starts 30 s before this program date")
+    }
+
+    func testLyricPositionFollowsTheNextSampleNotTheWallClock() throws {
+        let session = makeSession()
+        session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
+        tick(session, elapsed: 10, media: 50, program: songAProgram)
+        // A second sample whose program date jumped ahead by 1 s while the injected clock stood still.
+        tick(session, elapsed: 11, media: 51, program: songAProgram.addingTimeInterval(1))
+
+        let position = try XCTUnwrap(lyricSeconds())
+        XCTAssertEqual(position.seconds, 31, accuracy: 0.001)
+    }
+
+    /// 2 Pause holds the line
+    func testPauseHoldsTheLyricPositionAndResumeContinuesFromIt() throws {
+        let session = makeSession()
+        session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
+        tick(session, elapsed: 10, media: 50, program: songAProgram)
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 30, accuracy: 0.001)
+
+        harness.wall.addTimeInterval(4)
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 34, accuracy: 0.001, "playing: extrapolates between samples")
+
+        session.statusChanged(.paused)
+        harness.wall.addTimeInterval(15)
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 34, accuracy: 0.001, "paused: the line holds")
+
+        session.statusChanged(.playing)
+        harness.wall.addTimeInterval(2)
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 36, accuracy: 0.001, "resumed: continues from where it was")
+    }
+
+    func testBufferingAlsoHoldsTheLyricPosition() throws {
+        let session = makeSession()
+        session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
+        tick(session, elapsed: 10, media: 50, program: songAProgram)
+
+        session.statusChanged(.waitingToPlayAtSpecifiedRate)
+        harness.wall.addTimeInterval(8)
+
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 30, accuracy: 0.001)
+    }
+
+    func testASampleAfterAPauseReanchorsAtThePlayersValue() throws {
+        let session = makeSession()
+        session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
+        tick(session, elapsed: 10, media: 50, program: songAProgram)
+        session.statusChanged(.paused)
+        harness.wall.addTimeInterval(15)
+
+        // The next sample is the player's own value; it wins over the held one. Media time stood
+        // still through the pause, so the session's clock stays consistent.
+        tick(session, elapsed: 11, media: 51, program: songAProgram.addingTimeInterval(1))
+
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 31, accuracy: 0.001)
+    }
+
+    /// Both clocks of the hold harness move together: the publisher's and the state's.
+    private func advance(_ hold: HoldHarness, _ seconds: TimeInterval) {
+        hold.date.addTimeInterval(seconds)
+        harness.wall.addTimeInterval(seconds)
+    }
+
+    /// 3 Clock fault hold
+    func testClockFaultKeepsExtrapolatingForFiveSecondsOfPlayingThenIsNil() throws {
+        let occurrence = try realOccurrence()
+        let generation = UUID(), hold = HoldHarness()
+        let publisher = holdPublisher(hold, generation: generation)
+        publisher.receive(snapshot(generation: generation, trigger: .playerSample, occurrence: occurrence, songSeconds: 20))
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 20, accuracy: 0.001)
+
+        publisher.receive(faulty(generation))
+        advance(hold, 4)
+        publisher.receive(faulty(generation))
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 24, accuracy: 0.001, "held from the last valid sample")
+        XCTAssertEqual(harness.posts.count, 1, "the title hold is unchanged")
+
+        advance(hold, 1.2)
+        publisher.receive(faulty(generation))
+        XCTAssertNil(lyricSeconds(), "past 5 s of playing: no timed highlight, same moment the title lets go")
+        XCTAssertEqual(harness.posts.count, 2, "unavailable was published")
+    }
+
+    func testPausedTimeDoesNotCountAgainstTheLyricHold_andTheLyricAndTitleLetGoTogether() throws {
+        let occurrence = try realOccurrence()
+        let generation = UUID(), hold = HoldHarness()
+        let publisher = holdPublisher(hold, generation: generation)
+        publisher.receive(snapshot(generation: generation, trigger: .playerSample, occurrence: occurrence, songSeconds: 20))
+        publisher.receive(faulty(generation))
+        advance(hold, 3)
+
+        hold.playing = false
+        publisher.playerStatusChanged(playing: false)
+        advance(hold, 40)
+        publisher.receive(faulty(generation))
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 23, accuracy: 0.001, "held while paused")
+        XCTAssertEqual(harness.posts.count, 1, "the title is held too: the hold started again")
+
+        hold.playing = true
+        publisher.playerStatusChanged(playing: true)
+        advance(hold, 1.5)
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 24.5, accuracy: 0.001)
+        XCTAssertEqual(harness.posts.count, 1)
+
+        // The publisher's fresh hold ends after 5 s of playing. The lyric position goes with it.
+        advance(hold, 4)
+        publisher.receive(faulty(generation))
+        XCTAssertNil(lyricSeconds(), "unavailable was published, so the position is gone")
+        XCTAssertEqual(harness.posts.count, 2)
+    }
+
+    func testRepairedClockAfterAFaultTakesThePlayersValueAgain() throws {
+        let occurrence = try realOccurrence()
+        let generation = UUID(), hold = HoldHarness()
+        let publisher = holdPublisher(hold, generation: generation)
+        publisher.receive(snapshot(generation: generation, trigger: .playerSample, occurrence: occurrence, songSeconds: 20))
+        publisher.receive(faulty(generation))
+        advance(hold, 3)
+        publisher.receive(snapshot(generation: generation, trigger: .playerSample, occurrence: occurrence, songSeconds: 17))
+
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 17, accuracy: 0.001)
+        advance(hold, 10)
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 27, accuracy: 0.001)
+    }
+
+    // MARK: - 8 Unavailable is explicit
+
+    func testLyricPositionIsNilWithNoSelectedSong() {
+        let session = makeSession()
+        XCTAssertNil(lyricSeconds(), "before any publication")
+
+        session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
+        XCTAssertNil(lyricSeconds(), "a feed receipt alone gives no position")
+
+        tick(session, elapsed: 10, media: 50, program: nil)
+        XCTAssertNil(lyricSeconds(), "no paired clock, no song")
+    }
+
+    func testLyricPositionIsNilForASongPublishedWithNoValidSampleYet() {
+        let generation = UUID()
+        state.beginApplying(stationId: station, generation: generation)
+        let published = AlignedSong(stationId: station, occurrenceID: "occ-x", title: "T", artist: "A", album: nil,
+                                    artworkURL: nil, generation: generation)
+        XCTAssertTrue(state.publish(.song(published), stationId: station, generation: generation))
+
+        XCTAssertNil(lyricSeconds())
+    }
+
+    func testLyricPositionIsNilAfterUnavailableAndForAnotherStation() throws {
+        let session = makeSession()
+        session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
+        tick(session, elapsed: 10, media: 50, program: songAProgram)
+        XCTAssertNotNil(lyricSeconds())
+        XCTAssertNil(lyricSeconds("another-station"))
+
+        // A non-transient fault fails closed at once.
+        tick(session, elapsed: 11, media: 51, program: nil)
+        XCTAssertNil(lyricSeconds())
+        XCTAssertNil(lyricSeconds("another-station"))
+    }
+
+    func testLyricPositionIsNilForASessionThatIsNotApplying() {
+        let observer = makeSession(mode: .observe)
+        observer.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
+        tick(observer, elapsed: 10, media: 50, program: songAProgram)
+
+        XCTAssertNil(lyricSeconds())
+        XCTAssertFalse(state.isApplying(stationId: station))
+    }
+
+    func testLyricPositionIsNilOnceTheGenerationEnds() {
+        let session = makeSession()
+        session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
+        tick(session, elapsed: 10, media: 50, program: songAProgram)
+        XCTAssertNotNil(lyricSeconds())
+
+        session.stop()
+
+        XCTAssertNil(lyricSeconds())
+    }
+
+    func testAnEndedGenerationCannotFeedANewerSessionsPosition() throws {
+        let older = UUID(), newer = UUID()
+        state.beginApplying(stationId: station, generation: older)
+        state.beginApplying(stationId: station, generation: newer)
+        let published = AlignedSong(stationId: station, occurrenceID: "occ-x", title: "T", artist: "A", album: nil,
+                                    artworkURL: nil, generation: newer)
+        XCTAssertTrue(state.publish(.song(published), stationId: station, generation: newer))
+
+        state.recordSongSample(occurrenceID: "occ-x", songSeconds: 99, playing: true, stationId: station, generation: older)
+        state.recordPlaying(false, stationId: station, generation: older)
+        XCTAssertNil(lyricSeconds(), "the older generation's sample is dropped")
+
+        state.recordSongSample(occurrenceID: "occ-x", songSeconds: 5, playing: true, stationId: station, generation: newer)
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 5, accuracy: 0.001)
+    }
+
+    func testANewSongStartsFromItsOwnSampleNotTheOldOnesPosition() throws {
+        let session = makeSession()
+        session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
+        tick(session, elapsed: 10, media: 50, program: songAProgram)
+        let first = try XCTUnwrap(lyricSeconds())
+
+        session.accept(feed([song("Song B", "Artist B", at: base.addingTimeInterval(25)), song("Song A", "Artist A", at: base)]),
+                       requestedElapsed: 10.5, receivedElapsed: 10.8)
+        tick(session, elapsed: 11, media: 51, program: songAProgram.addingTimeInterval(1))
+        let second = try XCTUnwrap(lyricSeconds())
+
+        XCTAssertNotEqual(second.occurrenceID, first.occurrenceID)
+        let sessionSeconds = try XCTUnwrap(session.snapshot.songSeconds)
+        XCTAssertEqual(second.seconds, sessionSeconds, accuracy: 0.001)
     }
 }

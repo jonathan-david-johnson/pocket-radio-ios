@@ -281,6 +281,7 @@ final class RadioPlaybackSession {
         lastStatus = status
         let elapsed = elapsedNow
         emit("[align] status \(AlignmentProbeLog.statusText(status)) t=\(Self.f1(elapsed))")
+        publisher?.playerStatusChanged(playing: status == .playing)
         if status == .playing {
             hasPlayed = true
             if let start = stallStart {

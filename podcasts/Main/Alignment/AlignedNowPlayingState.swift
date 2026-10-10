@@ -50,8 +50,13 @@ final class AlignedNowPlayingState {
 
     private var applying: [String: UUID] = [:]
     private var currentOwner: UUID?
+    private var estimator: SongPositionEstimator
+    private let now: () -> Date
 
-    init() {}
+    init(now: @escaping () -> Date = Date.init) {
+        self.now = now
+        estimator = SongPositionEstimator(now: now)
+    }
 
     /// True while an Apply session for that station is live.
     func isApplying(stationId: String) -> Bool {
@@ -63,6 +68,17 @@ final class AlignedNowPlayingState {
         guard case .song(let song)? = current, song.stationId == stationId else { return nil }
         return TracklistEntry(title: song.title, artist: song.artist, album: song.album,
                               albumArtURL: song.artworkURL, playedAt: song.playedAt)
+    }
+
+    /// Lyric position for the current aligned song: its song seconds on the player's clock. Nil unless
+    /// this station is applying and the current state is a song for it, and nil while the estimator
+    /// has no valid position (no sample yet, or a clock fault older than its hold). Never reads the wall clock
+    /// for a fallback. See ADR 0005.
+    func lyricPosition(stationId: String) -> (occurrenceID: String, seconds: Double)? {
+        guard isApplying(stationId: stationId),
+              case .song(let song)? = current, song.stationId == stationId,
+              let seconds = estimator.position(forOccurrence: song.occurrenceID) else { return nil }
+        return (song.occurrenceID, seconds)
     }
 
     /// Accepts artwork only for the current song's occurrence. Returns whether it was stored.
@@ -91,10 +107,35 @@ final class AlignedNowPlayingState {
         applying[stationId] == generation
     }
 
+    /// Adapter seam: a valid player sample for the published occurrence. Dropped unless this generation
+    /// is the station's live Apply session.
+    func recordSongSample(occurrenceID: String, songSeconds: Double, playing: Bool,
+                          stationId: String, generation: UUID) {
+        guard isOwner(stationId: stationId, generation: generation) else { return }
+        estimator.record(occurrenceID: occurrenceID, songSeconds: songSeconds, playing: playing)
+    }
+
+    /// Adapter seam: the clock is briefly invalid and the song is being held.
+    func recordClockFault(playing: Bool, stationId: String, generation: UUID) {
+        guard isOwner(stationId: stationId, generation: generation) else { return }
+        estimator.recordFault(playing: playing)
+    }
+
+    /// Adapter seam: the player started or stopped advancing, with no sample.
+    func recordPlaying(_ playing: Bool, stationId: String, generation: UUID) {
+        guard isOwner(stationId: stationId, generation: generation) else { return }
+        estimator.recordPlaying(playing)
+    }
+
     /// Adapter seam. Rejected unless this generation is the station's live Apply session.
     @discardableResult
     func publish(_ value: AlignedNowPlaying, stationId: String, generation: UUID) -> Bool {
         guard isOwner(stationId: stationId, generation: generation) else { return false }
+        if case .song(let song) = value, case .song(let shown)? = current, shown.occurrenceID == song.occurrenceID {
+            // A correction to the same occurrence keeps its position.
+        } else {
+            resetPosition()
+        }
         current = value
         currentOwner = generation
         if case .song(let song) = value, artwork?.occurrenceID == song.occurrenceID {
@@ -104,7 +145,12 @@ final class AlignedNowPlayingState {
         return true
     }
 
+    private func resetPosition() {
+        estimator = SongPositionEstimator(now: now)
+    }
+
     private func clearCurrent() {
+        resetPosition()
         current = nil
         artwork = nil
         currentOwner = nil

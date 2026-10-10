@@ -35,6 +35,12 @@ enum AlignedConsumers {
         }
     }
 
+    /// The lyric position on the player's clock for the current aligned song. Nil unless applying,
+    /// a song is selected for this station, and the clock gives a valid position.
+    static func lyricPosition(stationId: String) -> (occurrenceID: String, seconds: Double)? {
+        onMain { AlignedNowPlayingState.shared.lyricPosition(stationId: stationId) }
+    }
+
     /// The stored image for the current aligned occurrence, for a full Now Playing rebuild.
     static func artworkForRebuild(stationId: String) -> UIImage? {
         onMain {
