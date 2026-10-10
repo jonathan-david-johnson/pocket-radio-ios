@@ -102,6 +102,12 @@ class PlaybackManager: ServerPlaybackDelegate {
 
     private let commandCenterSource: AnalyticsSource = .nowPlayingWidget
 
+    #if !os(watchOS) && !APPCLIP && !os(tvOS)
+    /// The live station the user stopped, while nothing else is loaded. It keeps a Now Playing entry
+    /// and a Play command on the lock screen, and Play starts a fresh connection. See ADR 0006.
+    private(set) var stoppedRadioStation: RadioStation?
+    #endif
+
     // Upstream made this `private`. This fork keeps it internal so
     // `RadioPlaybackControlsTests` can exercise the remote-command policy on a
     // throwaway instance instead of mutating `PlaybackManager.shared`.
@@ -182,6 +188,9 @@ class PlaybackManager: ServerPlaybackDelegate {
     }
 
     func load(episode: BaseEpisode, autoPlay: Bool, overrideUpNext: Bool, saveCurrentEpisode: Bool = true, completion: (() -> Void)? = nil) {
+        #if !os(watchOS) && !APPCLIP && !os(tvOS)
+        stoppedRadioStation = nil
+        #endif
         FileLog.shared.addMessage("Loading \(episode.displayableTitle()) with UUID \(episode.uuid) autoPlay \(autoPlay) overrideUpNext: \(overrideUpNext)")
 
         // Preserve the outgoing item by moving it to Up Next whenever the
@@ -651,11 +660,46 @@ class PlaybackManager: ServerPlaybackDelegate {
     /// Fully stops live radio playback: pauses the stream and tears it down so the
     /// next play is a fresh connection (preroll expected — by design for live radio).
     /// This is the in-app "stop" button + lock-screen stopCommand handler for radio.
+    ///
+    /// The station then keeps a stopped Now Playing entry (rate 0) and the lock screen's Play
+    /// command, so a stop on the lock screen can be restarted from the lock screen. Without it the
+    /// entry cleared, Play found nothing to resume, and the widget left the lock screen.
     func stopRadioPlayback() {
         FileLog.shared.addMessage("PlaybackManager stopRadioPlayback")
+        #if !os(watchOS) && !APPCLIP && !os(tvOS)
+        let station = liveStation()
+        #endif
         pause(userInitiated: true)
         endPlayback(saveCurrentEpisode: false)
+        #if !os(watchOS) && !APPCLIP && !os(tvOS)
+        if let station {
+            stoppedRadioStation = station
+            NowPlayingHelper.setStoppedRadioInfo(for: station)
+            updateRemoteCommandEnabledState(for: nil)
+            FileLog.shared.addMessage("PlaybackManager stopped radio kept on the lock screen: \(station.displayableTitle())")
+        }
+        #endif
     }
+
+    #if !os(watchOS) && !APPCLIP && !os(tvOS)
+    /// Lock screen or headphone Play while a stopped station is held: a fresh connection to it.
+    /// Returns false when there is no stopped station, so the caller reports no actionable item.
+    private func resumeStoppedRadio() -> Bool {
+        guard currentEpisode == nil, let station = stoppedRadioStation else { return false }
+        FileLog.shared.addMessage("Remote control: play, restarting stopped radio \(station.displayableTitle())")
+        // iOS can send Play twice. The second finds a loaded station and takes the existing 10-second path.
+        UserDefaults.standard.set(Date(), forKey: Constants.UserDefaults.lastPlayEvent)
+        let restart = { [commandCenterSource] in
+            RadioPlaybackStarter.shared.reload(station: station, source: commandCenterSource)
+        }
+        if Thread.isMainThread {
+            restart()
+        } else {
+            DispatchQueue.main.sync(execute: restart)
+        }
+        return true
+    }
+    #endif
 
     func skipToPreviousChapter(startPlaybackAfterSkip: Bool = false) {
         guard let previousChapter = chapterManager.previousVisibleChapter() else { return }
@@ -1190,6 +1234,9 @@ class PlaybackManager: ServerPlaybackDelegate {
     }
 
     func endPlayback(saveCurrentEpisode: Bool = true) {
+        #if !os(watchOS) && !APPCLIP && !os(tvOS)
+        stoppedRadioStation = nil
+        #endif
         cancelUpdateTimer()
         cancelSleepTimer()
         chapterManager.clearChapterInfo()
@@ -2107,6 +2154,15 @@ class PlaybackManager: ServerPlaybackDelegate {
         refreshNowPlayingInfo(forceFullRebuild: false)
     }
 
+    /// True while a stopped live station owns the lock-screen entry, so a refresh must not clear it.
+    private var holdsStoppedRadioEntry: Bool {
+        #if !os(watchOS) && !APPCLIP && !os(tvOS)
+        return stoppedRadioStation != nil && currentEpisode == nil
+        #else
+        return false
+        #endif
+    }
+
     private func clearNowPlayingInfo() {
         #if os(watchOS)
             WatchNowPlayingHelper.clearNowPlayingInfo()
@@ -2143,7 +2199,7 @@ class PlaybackManager: ServerPlaybackDelegate {
 
         // When Google Casting in the background, control over the casting device is not available, so remove the controls
         guard let episode = currentEpisode, !connectedToExternalDevice else {
-            clearNowPlayingInfo()
+            if !holdsStoppedRadioEntry { clearNowPlayingInfo() }
 
             return
         }
@@ -2171,7 +2227,7 @@ class PlaybackManager: ServerPlaybackDelegate {
 
     @objc private func updateAllNowPlayingData() {
         guard let episode = currentEpisode else {
-            clearNowPlayingInfo()
+            if !holdsStoppedRadioEntry { clearNowPlayingInfo() }
             return
         }
 
@@ -2272,6 +2328,9 @@ class PlaybackManager: ServerPlaybackDelegate {
         let commandCenter = MPRemoteCommandCenter.shared()
 
         commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ -> MPRemoteCommandHandlerStatus in
+            #if !os(watchOS) && !APPCLIP && !os(tvOS)
+            if let self, currentEpisode == nil, resumeStoppedRadio() { return .success }
+            #endif
             guard let self, currentEpisode != nil else { return .noActionableNowPlayingItem }
             remotePlayPauseToggle()
             return .success
@@ -2289,6 +2348,9 @@ class PlaybackManager: ServerPlaybackDelegate {
         }
 
         commandCenter.playCommand.addTarget { [weak self] _ -> MPRemoteCommandHandlerStatus in
+            #if !os(watchOS) && !APPCLIP && !os(tvOS)
+            if let self, currentEpisode == nil, resumeStoppedRadio() { return .success }
+            #endif
             guard let strongSelf = self, let _ = strongSelf.currentEpisode else { return .noActionableNowPlayingItem }
 
             strongSelf.analyticsPlaybackHelper.currentSource = strongSelf.commandCenterSource
@@ -2407,11 +2469,23 @@ class PlaybackManager: ServerPlaybackDelegate {
         // disabled — same as a regular podcast.
         let isRadio = shouldUseMuteControls(for: episode)
 
+        #if !os(watchOS) && !APPCLIP && !os(tvOS)
+        let plan = RadioRemoteCommands.plan(liveStream: isRadio, stoppedStation: episode == nil && stoppedRadioStation != nil)
+        commandCenter.skipBackwardCommand.isEnabled = plan.skipAndTrack
+        commandCenter.skipForwardCommand.isEnabled = plan.skipAndTrack
+        commandCenter.previousTrackCommand.isEnabled = plan.skipAndTrack
+        commandCenter.nextTrackCommand.isEnabled = plan.skipAndTrack
+        commandCenter.stopCommand.isEnabled = plan.stop
+        commandCenter.playCommand.isEnabled = plan.play
+        commandCenter.pauseCommand.isEnabled = plan.pause
+        commandCenter.togglePlayPauseCommand.isEnabled = plan.togglePlayPause
+        #else
         commandCenter.skipBackwardCommand.isEnabled = !isRadio
         commandCenter.skipForwardCommand.isEnabled = !isRadio
         commandCenter.previousTrackCommand.isEnabled = !isRadio
         commandCenter.nextTrackCommand.isEnabled = !isRadio
         commandCenter.stopCommand.isEnabled = isRadio
+        #endif
     }
 
     @objc private func refreshRemoteCommands() {

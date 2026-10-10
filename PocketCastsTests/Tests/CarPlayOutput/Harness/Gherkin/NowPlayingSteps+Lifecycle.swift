@@ -148,8 +148,15 @@ extension NowPlayingSteps {
         recordLifecycleSnapshot()
         recordLifecycle("stopRadioPlayback(); key before=\(pm._lastResolvedRadioKeyForTesting ?? "nil")")
         pm.stopRadioPlayback()
-        guard spin(10, until: { pm.currentEpisode == nil && !pm.isPlaying && NowPlayingProbe.snapshot().isEmpty }) else {
-            throw StepFailure(message: "stop did not tear down episode/transport/display")
+        // Stop ends the session but keeps a stopped entry for the lock screen: the station, no song, rate 0,
+        // so Play can restart it from the lock screen (ADR 0006).
+        guard spin(10, until: {
+            let snapshot = NowPlayingProbe.snapshot()
+            let rate = (MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyPlaybackRate] as? NSNumber)?.doubleValue
+            return pm.currentEpisode == nil && !pm.isPlaying && pm.stoppedRadioStation?.uuid == station.stationId
+                && !snapshot.isEmpty && snapshot.title == station.displayableTitle() && rate == 0
+        }) else {
+            throw StepFailure(message: "stop did not tear down episode/transport and leave the stopped lock-screen entry; display: \(NowPlayingProbe.snapshot())")
         }
         recordLifecycle("stopped; key retained=\(pm._lastResolvedRadioKeyForTesting ?? "nil"); cache=\(RadioTracklistService.shared.cached(stationId: station.stationId)?.map(\.title) ?? [])")
         // Same world, server title, resolver, cache and dedupe state. Only public controls.

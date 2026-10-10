@@ -88,6 +88,30 @@ class NowPlayingHelper {
     }
 
     #if !os(watchOS) && !APPCLIP && !os(tvOS)
+    /// The Now Playing entry for a live station the user stopped: the station, no song, rate 0. It keeps
+    /// the app on the lock screen so Play can start a fresh connection. See ADR 0006.
+    class func stoppedRadioInfo(stationName: String) -> [String: AnyObject] {
+        var info: [String: AnyObject] = [
+            MPMediaItemPropertyTitle: stationName as NSString,
+            MPMediaItemPropertyArtist: stationName as NSString,
+            MPMediaItemPropertyAlbumTitle: stationName as NSString,
+            MPNowPlayingInfoPropertyIsLiveStream: NSNumber(value: true),
+            MPMediaItemPropertyMediaType: NSNumber(value: MPMediaType.music.rawValue),
+            MPNowPlayingInfoPropertyMediaType: NSNumber(value: MPNowPlayingInfoMediaType.audio.rawValue),
+            MPMediaItemPropertyPlaybackDuration: NSNumber(value: 0),
+            MPNowPlayingInfoPropertyPlaybackRate: NSNumber(value: 0.0),
+            MPNowPlayingInfoPropertyDefaultPlaybackRate: NSNumber(value: 1.0)
+        ]
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = NSNumber(value: 0)
+        return info
+    }
+
+    class func setStoppedRadioInfo(for station: RadioStation) {
+        var info = stoppedRadioInfo(stationName: station.displayableTitle())
+        setRadioArtwork(for: station, size: ImageManager.sizeFor(imageSize: .page), into: &info)
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
     /// Loads the station logo bundled asset for a curated radio station.
     /// Returns nil for non-curated stations (radio-browser ones without a
     /// `logoAsset`).
