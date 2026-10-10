@@ -6,6 +6,8 @@ struct PocketRadioEntry: TimelineEntry {
     let nowPlaying: WidgetEpisode?
     let isLive: Bool
     let liveTrack: WidgetLiveTrack?
+    /// The live song's album art, loaded when the entry is built. Nil shows the station logo.
+    let liveArtworkData: Data?
     let isPlaying: Bool
     let isMuted: Bool
     /// Always exactly 3 entries — pad with `WidgetFavoriteStation.placeholder` if

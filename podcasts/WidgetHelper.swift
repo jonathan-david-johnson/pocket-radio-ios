@@ -14,6 +14,11 @@ class WidgetHelper {
     static let appGroupId = SharedConstants.GroupUserDefaults.groupContainerId
     static let maxUpNextToPublish = 10
     static let maxFilterToPublish = 5
+
+    // The song whose album art is stored for the widget, and the song a download is running for.
+    private var liveArtworkKey: String?
+    private var liveArtworkFileName: String?
+    private var liveArtworkRequestKey: String?
     init() {
         NotificationCenter.default.addObserver(self, selector: #selector(updateFromNotification), name: Constants.Notifications.playbackStarted, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(updateFromNotification), name: Constants.Notifications.playbackEnded, object: nil)
@@ -286,6 +291,9 @@ class WidgetHelper {
         /// brand mark even when the track has no album art (or before the
         /// widget process can fetch a remote URL — widgets render sync).
         let logoAssetName: String?
+        /// File in the App Group's live-artwork folder holding the current song's album art, nil when
+        /// it isn't stored yet. The widget shows it instead of the logo.
+        let artworkFileName: String?
     }
 
     /// Re-loads the top-3 favorites and writes a JSON snapshot to the App Group.
@@ -357,6 +365,7 @@ class WidgetHelper {
         // counts, including finite-MP3 streams like NPR Hourly.
         guard let station = PlaybackManager.shared.liveStation(for: nil) else {
             sharedDefaults.removeObject(forKey: SharedConstants.GroupUserDefaults.pocketRadioLiveTrack)
+            resetLiveArtwork()
             return
         }
         let stationId = station.uuid
@@ -364,13 +373,19 @@ class WidgetHelper {
         let enhancement = CuratedStationsLoader.enhancementsByUUID[stationId]
         let stationName = PlaybackManager.shared.liveStation(for: nil)?.displayableTitle() ?? enhancement?.name ?? ""
         let resolved = TrackArtworkResolver.bestResolveEntry(stationId: stationId, icyArtist: "", icyTitle: "")
+        let songKey = liveSongKey(stationId: stationId, entry: resolved)
+
+        // The widget cannot fetch an image when it renders, so it shows the song's art only once the
+        // app has stored it in the App Group. Until then, and for stations with no art, it shows the logo.
+        let artworkFileName = (songKey != nil && songKey == liveArtworkKey) ? liveArtworkFileName : nil
 
         let snapshot = PocketRadioLiveTrackSnapshot(
             stationId: stationId,
             title: resolved?.title ?? stationName,
             artist: resolved?.artist ?? "",
             albumArtURL: resolved?.albumArtURL?.absoluteString,
-            logoAssetName: enhancement?.logoAsset
+            logoAssetName: enhancement?.logoAsset,
+            artworkFileName: artworkFileName
         )
         do {
             let data = try JSONEncoder().encode(snapshot)
@@ -378,6 +393,53 @@ class WidgetHelper {
         } catch {
             FileLog.shared.addMessage("PocketRadioWidget live track encode failed: \(error.localizedDescription)")
         }
+
+        if let resolved, let songKey, songKey != liveArtworkKey {
+            loadLiveArtwork(for: resolved, station: station, songKey: songKey)
+        }
+    }
+
+    private func liveSongKey(stationId: String, entry: TracklistEntry?) -> String? {
+        RadioArtworkRepaint.songKey(stationId: stationId, entry: entry,
+                                    occurrenceID: AlignedConsumers.currentOccurrenceID(stationId: stationId))
+    }
+
+    private func resetLiveArtwork() {
+        liveArtworkKey = nil
+        liveArtworkFileName = nil
+        liveArtworkRequestKey = nil
+        WidgetLiveArtworkStore.shared()?.removeAll()
+    }
+
+    /// Resolves the song's art URL (the entry's own, else the iTunes fallback the players use), downloads it,
+    /// stores a small JPEG in the App Group, and republishes so the widget shows it. One request per song.
+    private func loadLiveArtwork(for entry: TracklistEntry, station: RadioStation, songKey: String) {
+        guard liveArtworkRequestKey != songKey else { return }
+        liveArtworkRequestKey = songKey
+        let stationId = station.uuid
+        TrackArtworkResolver.shared.artworkURL(for: entry, station: station) { [weak self] url in
+            guard let self, let url else { return }
+            Task.detached {
+                guard let (data, _) = try? await URLSession.shared.data(from: url),
+                      let jpeg = WidgetLiveArtworkStore.jpegData(from: data) else { return }
+                await MainActor.run { [weak self] in
+                    self?.storeLiveArtwork(jpeg, songKey: songKey, stationId: stationId)
+                }
+            }
+        }
+    }
+
+    /// Stores the art only while its song is still the current one, so a slow download for an earlier
+    /// song cannot replace a newer song's image.
+    private func storeLiveArtwork(_ jpeg: Data, songKey: String, stationId: String) {
+        guard let live = PlaybackManager.shared.liveStation(for: nil), live.uuid == stationId,
+              liveSongKey(stationId: stationId, entry: TrackArtworkResolver.bestResolveEntry(stationId: stationId, icyArtist: "", icyTitle: "")) == songKey,
+              let store = WidgetLiveArtworkStore.shared(),
+              let name = try? store.write(jpeg, forSongKey: songKey) else { return }
+        liveArtworkKey = songKey
+        liveArtworkFileName = name
+        publishPocketRadioLiveTrack()
+        WidgetCenter.shared.reloadTimelines(ofKind: "PocketRadio_Widget")
     }
 
     func cleanupAppGroupImages() {

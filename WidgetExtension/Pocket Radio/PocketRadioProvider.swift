@@ -65,6 +65,7 @@ struct PocketRadioProvider: TimelineProvider {
             nowPlaying: nowPlaying,
             isLive: isLive,
             liveTrack: liveTrack,
+            liveArtworkData: isLive ? liveTrack?.loadArtworkData() : nil,
             isPlaying: widgetData.isPlaying,
             isMuted: isMuted,
             favorites: favorites,

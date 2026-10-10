@@ -20,6 +20,8 @@ enum SharedConstants {
         public static let pocketRadioIsLiveStream = "pocketRadioIsLiveStream"
         public static let pocketRadioLiveTrack = "pocketRadioLiveTrack"
         public static let pocketRadioIsMuted = "pocketRadioIsMuted"
+        /// Folder in the App Group container that holds the live song's album art for the widget.
+        public static let pocketRadioLiveArtworkDirectory = "widget_radio_art"
     }
 
     enum PlaybackEffects {

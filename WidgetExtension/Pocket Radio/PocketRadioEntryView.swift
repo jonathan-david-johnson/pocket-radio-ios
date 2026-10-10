@@ -60,7 +60,11 @@ struct PocketRadioEntryView: View {
 
     @ViewBuilder
     private var artworkView: some View {
-        if entry.isLive, let assetName = entry.liveTrack?.logoAssetName, let image = UIImage(named: assetName) {
+        if entry.isLive, let data = entry.liveArtworkData, let image = UIImage(data: data) {
+            Image(uiImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } else if entry.isLive, let assetName = entry.liveTrack?.logoAssetName, let image = UIImage(named: assetName) {
             Image(uiImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
