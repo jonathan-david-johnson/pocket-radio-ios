@@ -256,8 +256,12 @@ final class RadioPlaybackSession {
         statusChanged(status)
         let media = mediaSeconds.flatMap { $0.isFinite ? $0 : nil }
         let advancing = rate > 0 && status == .playing
+        let buffer = currentItem.flatMap {
+            AlignmentProbeLog.forwardBuffer(loadedRanges: $0.loadedTimeRanges.map(\.timeRangeValue), current: $0.currentTime())
+        }
         emit(AlignmentProbeLog.line(generation: generation, elapsed: elapsed, media: media,
-                                    date: programDate, rate: rate, status: status))
+                                    date: programDate, rate: rate, status: status,
+                                    buffer: buffer, likelyToKeepUp: currentItem?.isPlaybackLikelyToKeepUp))
         monitorSamples.append(AlignmentMonitorSample(elapsed: elapsed, mediaSeconds: media,
                                                      programDate: programDate, rate: rate, isPlaying: advancing))
         if monitorSamples.count > Self.maxStoredSamples {

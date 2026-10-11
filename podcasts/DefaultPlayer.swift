@@ -1034,20 +1034,40 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
 
         playStalledObserver = nc.addObserver(forName: NSNotification.Name.AVPlayerItemPlaybackStalled, object: nil, queue: nil) { [weak self] _ in
             guard let self else { return }
-            FileLog.shared.addMessage("Received notification of playback stall")
+            FileLog.shared.addMessage("Received notification of playback stall\(self.stallBufferDescription())")
             guard self.shouldKeepPlaying else { return }
 
-            if self.isStreamingHLS {
+            #if !os(watchOS) && !APPCLIP && !os(tvOS)
+            let liveRadio = PlaybackManager.shared.isLiveStream()
+            let resumeWithoutSeeking = StallRecovery.resumesWithoutSeeking(streamingHLS: self.isStreamingHLS, liveRadio: liveRadio)
+            #else
+            let liveRadio = false
+            let resumeWithoutSeeking = self.isStreamingHLS
+            #endif
+            if resumeWithoutSeeking {
                 // Recovering an HLS stall via play() re-seeks to the resume position, which flushes the
-                // HLS buffer and triggers another stall — a runaway loop at higher rates. Just re-apply
-                // the rate and let AVPlayer resume once it has buffered enough, without seeking.
-                FileLog.shared.addMessage("Trying to recover from HLS stall without seeking")
+                // HLS buffer and triggers another stall — a runaway loop at higher rates. For live radio
+                // the saved position is stale, so the seek also rewinds the stream. Just re-apply the rate
+                // and let AVPlayer resume once it has buffered enough, without seeking.
+                FileLog.shared.addMessage("Trying to recover from \(liveRadio ? "live radio" : "HLS") stall without seeking")
                 self.performSetPlaybackRate()
             } else {
                 FileLog.shared.addMessage("Trying to recover from stall by playing")
                 self.play(completion: nil)
             }
         }
+    }
+
+    /// Buffer state for the stall log line: how much audio was loaded ahead, and what the player expected.
+    private func stallBufferDescription() -> String {
+        guard let item = player?.currentItem else { return "" }
+        let ahead = item.loadedTimeRanges.compactMap { value -> TimeInterval? in
+            let range = value.timeRangeValue
+            return range.containsTime(item.currentTime()) ? max(0, range.end.seconds - item.currentTime().seconds) : nil
+        }.first
+        let aheadText = ahead.map { String(format: "%.1f", $0) } ?? "none"
+        return " (buffer ahead \(aheadText) s, keepUp \(item.isPlaybackLikelyToKeepUp), bufferEmpty \(item.isPlaybackBufferEmpty), "
+            + "preferredForwardBuffer \(item.preferredForwardBufferDuration) s)"
     }
 
     private func cleanupPlayer() {
