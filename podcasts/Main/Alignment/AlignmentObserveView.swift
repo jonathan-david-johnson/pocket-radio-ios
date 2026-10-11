@@ -127,6 +127,7 @@ final class AlignmentObserveViewModel: ObservableObject {
 
 struct AlignmentObserveView: View {
     @StateObject private var model = AlignmentObserveViewModel()
+    @StateObject private var anchors = ShazamAnchorProbe()
     @State private var timer: Timer?
 
     var body: some View {
@@ -156,6 +157,27 @@ struct AlignmentObserveView: View {
                     .font(.footnote)
             } header: {
                 Text("Feed skew (experiment)")
+            }
+
+            Section {
+                Button(anchors.isListening ? "Listening…" : "Anchor now") { Task { await anchors.anchorNow() } }
+                    .disabled(anchors.isListening)
+                Toggle("Auto-anchor every 3 min", isOn: Binding(
+                    get: { anchors.isAuto },
+                    set: { $0 ? anchors.startAuto(every: 180) : anchors.stopAuto() }))
+                Text(anchors.status).font(.footnote)
+                if let correction = anchors.learnedCorrection {
+                    Text(String(format: "Learned correction: %+.1f s (n=%d)", correction, anchors.measurements.filter(\.identityMatches).count))
+                        .font(.footnote)
+                }
+                ForEach(Array(anchors.measurements.prefix(8).enumerated()), id: \.offset) { _, m in
+                    Text(String(format: "%@ %+.1f s | offset %.1f | %@", m.identityMatches ? "✓" : "✗", m.delta, m.trueOffset, m.shazam.title))
+                        .font(.footnote)
+                }
+            } header: {
+                Text("ShazamKit anchor (experiment)")
+            } footer: {
+                Text("Listens to the speaker with the microphone and compares ShazamKit's song position with the app's. Works only where the mic hears the audio. Measures only; nothing on screen changes.")
             }
 
             Section("Active session") {

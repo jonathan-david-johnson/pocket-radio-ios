@@ -1030,7 +1030,7 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Pocket Casts uses this to find Google Cast devices on your network. If you don&apos;t use this feature feel free to say no.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Pocket Casts needs to access your microphone in order to detect nearby Google Cast devices.</string>
+	<string>Pocket Casts needs to access your microphone in order to detect nearby Google Cast devices. Debug builds also use it to identify the radio song you hear, which Apple's ShazamKit matches; nothing is recorded or stored.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Pocket Casts needs permission to save this image to your photo library.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
