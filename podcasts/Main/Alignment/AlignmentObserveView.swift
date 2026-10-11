@@ -50,6 +50,13 @@ final class AlignmentObserveViewModel: ObservableObject {
         set { objectWillChange.send(); store.pollDriver = newValue }
     }
 
+    /// Debug: seconds added to the `+160 s` offset to mimic a feed that runs late or early. Takes effect on the
+    /// running session at its next sample.
+    var feedSkew: Double {
+        get { store.feedSkew }
+        set { objectWillChange.send(); store.feedSkew = newValue }
+    }
+
     func refresh() {
         guard let session = sessionProvider() else {
             statusText = "No active session"
@@ -137,6 +144,18 @@ struct AlignmentObserveView: View {
                 }
             } footer: {
                 Text("Takes effect the next time a station starts. Observe and Apply play KCRW's HLS stream. Observe publishes nothing; Apply drives the lock screen and players from the aligned song.")
+            }
+
+            Section {
+                Stepper(value: Binding(get: { model.feedSkew }, set: { model.feedSkew = $0 }),
+                        in: -ObserveSwitchStore.feedSkewLimit...ObserveSwitchStore.feedSkewLimit, step: 0.5) {
+                    Text("Feed skew: \(String(format: "%+.1f", model.feedSkew)) s")
+                }
+                Button("Reset skew") { model.feedSkew = 0 }
+                Text("Adds to the +160 s feed-to-program offset on the running session, to mimic a feed that runs late (positive) or early (negative). Titles and lyrics move with it. Debug only.")
+                    .font(.footnote)
+            } header: {
+                Text("Feed skew (experiment)")
             }
 
             Section("Active session") {

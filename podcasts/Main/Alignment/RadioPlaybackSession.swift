@@ -60,6 +60,10 @@ final class RadioPlaybackSession {
     private var state = SessionState(historyPolicy: KCRWAlignmentConfiguration.historyPolicy,
                                      selectionPolicy: KCRWAlignmentConfiguration.selectionPolicy,
                                      clockPolicy: KCRWAlignmentConfiguration.clockPolicy)
+    private let feedSkew: () -> Double
+    /// The Debug feed skew the selection policy currently reflects.
+    private var appliedSkew = 0.0
+    private var offsetLogged = false
     private var token: Any?
     private var statusToken: Any?
     private var pollTask: Task<Void, Never>?
@@ -93,7 +97,8 @@ final class RadioPlaybackSession {
          fetch: Fetch? = nil,
          install: Install? = nil,
          remove: @escaping Remove = { $0.removeTimeObserver($1) },
-         observeStatus: ObserveStatus? = nil) {
+         observeStatus: ObserveStatus? = nil,
+         feedSkew: @escaping () -> Double = { ObserveSwitchStore.shared.feedSkew }) {
         self.player = player
         self.item = item
         self.generation = generation
@@ -125,6 +130,7 @@ final class RadioPlaybackSession {
             feedClient = client
         }
         self.remove = remove
+        self.feedSkew = feedSkew
         startedAt = now()
         snapshot = RadioAlignmentSnapshot(generation: generation,
                                           endpoint: AlignmentProbeLog.safeEndpoint(endpoint),
@@ -148,6 +154,7 @@ final class RadioPlaybackSession {
 
         Self.active = self
         publisher?.isPlayerPlaying = { [weak self] in self?.lastStatus == .playing }
+        refreshOffsetPolicy()
         if mode == .apply { alignedState.beginApplying(stationId: stationId, generation: generation) }
         emit("[align] session start gen=\(AlignmentProbeLog.shortID(generation)) "
             + "endpoint=\(AlignmentProbeLog.safeEndpoint(endpoint)) "
@@ -252,6 +259,7 @@ final class RadioPlaybackSession {
     func sample(currentItem: AVPlayerItem?, rate: Float, status: AVPlayer.TimeControlStatus,
                 mediaSeconds: Double?, programDate: Date?) {
         guard !isStopped, currentItem === item else { return }
+        refreshOffsetPolicy()
         let elapsed = elapsedNow
         statusChanged(status)
         let media = mediaSeconds.flatMap { $0.isFinite ? $0 : nil }
@@ -277,6 +285,18 @@ final class RadioPlaybackSession {
             emitSummary(endElapsed: elapsed, kind: "checkpoint")
             nextSummaryAt = (floor(elapsed / Self.summaryInterval) + 1) * Self.summaryInterval
         }
+    }
+
+    /// Applies the Debug feed skew to the selection policy when it differs from the one in use. The skew is
+    /// the experiment's perturbation: it moves the effective `+160 s`, and the title and lyric position move with it.
+    private func refreshOffsetPolicy() {
+        let skew = feedSkew()
+        guard skew != appliedSkew || (skew != 0 && !offsetLogged) else { return }
+        appliedSkew = skew
+        offsetLogged = true
+        state.updateSelectionPolicy(AlignmentOffset.policy(skew: skew))
+        let offset = AlignmentOffset.effective(base: KCRWAlignmentConfiguration.selectionPolicy.feedToProgramOffset, skew: skew)
+        emit("[align] policy offset=\(String(format: "%.1f", offset)) s (feed skew \(String(format: "%+.1f", skew)) s)")
     }
 
     /// Status changes, from KVO or from a sample. Drives the stall record and `audioStopped`.

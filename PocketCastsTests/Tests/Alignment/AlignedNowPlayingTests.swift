@@ -16,6 +16,7 @@ final class AlignedNowPlayingTests: XCTestCase {
         var now: TimeInterval = 1000
         /// The state's injected clock for the lyric position. Tests move it by hand.
         var wall = Date(timeIntervalSince1970: 3_000_000_000)
+        var skew = 0.0
         var sessions: [RadioPlaybackSession] = []
     }
 
@@ -71,7 +72,8 @@ final class AlignedNowPlayingTests: XCTestCase {
             fetch: { KCRWFeedResult(entries: [], statusCode: 500, cacheAgeSeconds: nil, failure: "parked") },
             install: { _, _ in NSObject() },
             remove: { _, _ in },
-            observeStatus: { _, _ in NSObject() })
+            observeStatus: { _, _ in NSObject() },
+            feedSkew: { harness.skew })
         harness.sessions.append(session)
         return session
     }
@@ -726,6 +728,42 @@ final class AlignedNowPlayingTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 17, accuracy: 0.001)
         advance(hold, 10)
         XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 27, accuracy: 0.001)
+    }
+
+    // MARK: - Debug feed skew (self-healing experiment)
+
+    func testFeedSkewMovesTheEffectiveOffsetOnARunningSession() throws {
+        let session = makeSession()
+        session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
+        tick(session, elapsed: 10, media: 50, program: songAProgram)
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 30, accuracy: 0.001, "offset 160: 30 s into the song")
+
+        harness.skew = 5
+        tick(session, elapsed: 11, media: 51, program: songAProgram.addingTimeInterval(1))
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 26, accuracy: 0.001, "offset 165: the song starts 5 s later")
+        XCTAssertTrue(harness.lines.contains { $0.contains("policy offset=165.0 s (feed skew +5.0 s)") })
+
+        harness.skew = -4
+        tick(session, elapsed: 12, media: 52, program: songAProgram.addingTimeInterval(2))
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 36, accuracy: 0.001, "offset 156: 4 s earlier")
+    }
+
+    func testNoSkewLogsNoPolicyLineAndKeepsTheFrozenOffset() throws {
+        let session = makeSession()
+        session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
+        tick(session, elapsed: 10, media: 50, program: songAProgram)
+        tick(session, elapsed: 11, media: 51, program: songAProgram.addingTimeInterval(1))
+        XCTAssertFalse(harness.lines.contains { $0.contains("policy offset") })
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 31, accuracy: 0.001)
+    }
+
+    func testSkewedSelectionStillPublishesTheSameSong() throws {
+        harness.skew = 8
+        let session = makeSession()
+        session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
+        tick(session, elapsed: 10, media: 50, program: songAProgram)
+        XCTAssertEqual(publishedSong()?.title, "Song A")
+        XCTAssertTrue(harness.lines.contains { $0.contains("policy offset=168.0 s (feed skew +8.0 s)") }, "logged at the first sample")
     }
 
     // MARK: - 8 Unavailable is explicit

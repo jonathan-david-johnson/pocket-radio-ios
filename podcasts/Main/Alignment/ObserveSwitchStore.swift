@@ -23,6 +23,9 @@ enum AlignmentMode: String, CaseIterable, Equatable {
 final class ObserveSwitchStore {
     static let key = "PocketRadio.alignment.mode"
     static let pollDriverKey = "PocketRadio.alignment.pollDriver"
+    static let feedSkewKey = "PocketRadio.alignment.feedSkew"
+    /// The feed skew is clamped to ±this many seconds.
+    static let feedSkewLimit = 15.0
 
     /// The app's runtime store. Under XCTest it is an emptied private suite, because the test host
     /// is the app: a mode left on in the simulator must not change host-app tests.
@@ -60,6 +63,26 @@ final class ObserveSwitchStore {
     /// True when the mode is Observe or Apply. Kept for `PlaybackItem`'s endpoint choice, which
     /// applies to both.
     var isObserveOn: Bool { mode != .off }
+
+    /// Debug-only. Seconds added to the feed-to-program offset (`+160 s`), to mimic a feed that runs late
+    /// (positive) or early (negative) against the stream, for testing the self-healing offset. Zero in
+    /// Release. Launch with `-PocketRadio.alignment.feedSkew 5` to set it for a run.
+    var feedSkew: Double {
+        get {
+            #if DEBUG
+            let value = defaults.double(forKey: Self.feedSkewKey)
+            guard value.isFinite else { return 0 }
+            return min(Self.feedSkewLimit, max(-Self.feedSkewLimit, value))
+            #else
+            return 0
+            #endif
+        }
+        set {
+            #if DEBUG
+            defaults.set(min(Self.feedSkewLimit, max(-Self.feedSkewLimit, newValue)), forKey: Self.feedSkewKey)
+            #endif
+        }
+    }
 
     /// Debug-only. Release always uses `.timer`.
     var pollDriver: AlignmentPollDriver {
