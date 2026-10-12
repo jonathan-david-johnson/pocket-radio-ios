@@ -17,6 +17,7 @@ final class AlignedNowPlayingTests: XCTestCase {
         /// The state's injected clock for the lyric position. Tests move it by hand.
         var wall = Date(timeIntervalSince1970: 3_000_000_000)
         var skew = 0.0
+        var correction = 0.0
         var sessions: [RadioPlaybackSession] = []
     }
 
@@ -73,7 +74,8 @@ final class AlignedNowPlayingTests: XCTestCase {
             install: { _, _ in NSObject() },
             remove: { _, _ in },
             observeStatus: { _, _ in NSObject() },
-            feedSkew: { harness.skew })
+            feedSkew: { harness.skew },
+            correction: { _ in harness.correction })
         harness.sessions.append(session)
         return session
     }
@@ -746,6 +748,31 @@ final class AlignedNowPlayingTests: XCTestCase {
         harness.skew = -4
         tick(session, elapsed: 12, media: 52, program: songAProgram.addingTimeInterval(2))
         XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 36, accuracy: 0.001, "offset 156: 4 s earlier")
+    }
+
+    func testASelfHealCorrectionShortensTheOffsetOnARunningApplySession() throws {
+        let session = makeSession()
+        session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
+        tick(session, elapsed: 10, media: 50, program: songAProgram)
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 30, accuracy: 0.001)
+
+        harness.correction = 3
+        tick(session, elapsed: 11, media: 51, program: songAProgram.addingTimeInterval(1))
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 34, accuracy: 0.001, "offset 157: 3 s further into the song")
+        XCTAssertTrue(harness.lines.contains { $0.contains("policy offset=157.0 s (feed skew +0.0 s, self-heal correction +3.0 s)") })
+
+        harness.skew = 6
+        tick(session, elapsed: 12, media: 52, program: songAProgram.addingTimeInterval(2))
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 29, accuracy: 0.001, "skew +6 and correction +3: offset 163")
+    }
+
+    func testObserveModeNeverAppliesTheCorrection() throws {
+        harness.correction = 5
+        let session = makeSession(mode: .observe)
+        session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
+        tick(session, elapsed: 10, media: 50, program: songAProgram)
+        XCTAssertFalse(harness.lines.contains { $0.contains("self-heal correction") })
+        XCTAssertEqual(session.snapshot.songSeconds ?? -1, 30, accuracy: 0.001)
     }
 
     func testNoSkewLogsNoPolicyLineAndKeepsTheFrozenOffset() throws {

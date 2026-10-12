@@ -52,6 +52,12 @@ final class AlignmentObserveViewModel: ObservableObject {
 
     /// Debug: seconds added to the `+160 s` offset to mimic a feed that runs late or early. Takes effect on the
     /// running session at its next sample.
+    /// Debug: what the self-healing offset does. Off, Measure (learn and log only) or Apply (move the offset).
+    var selfHeal: SelfHealMode {
+        get { store.selfHeal }
+        set { objectWillChange.send(); store.selfHeal = newValue }
+    }
+
     var feedSkew: Double {
         get { store.feedSkew }
         set { objectWillChange.send(); store.feedSkew = newValue }
@@ -127,7 +133,8 @@ final class AlignmentObserveViewModel: ObservableObject {
 
 struct AlignmentObserveView: View {
     @StateObject private var model = AlignmentObserveViewModel()
-    @StateObject private var anchors = ShazamAnchorProbe()
+    @ObservedObject private var heal = SelfHealController.shared
+    @ObservedObject private var anchors = SelfHealController.shared.anchorProbe
     @State private var timer: Timer?
 
     var body: some View {
@@ -160,6 +167,14 @@ struct AlignmentObserveView: View {
             }
 
             Section {
+                Text("Self-heal").font(.subheadline.weight(.semibold))
+                Picker("Self-heal", selection: Binding(get: { model.selfHeal }, set: { model.selfHeal = $0 })) {
+                    Text("Off").tag(SelfHealMode.off)
+                    Text("Measure").tag(SelfHealMode.measure)
+                    Text("Apply").tag(SelfHealMode.apply)
+                }
+                .pickerStyle(.segmented)
+                Text(heal.phase).font(.footnote)
                 Button(anchors.isListening ? "Listening…" : "Anchor now") { Task { await anchors.anchorNow() } }
                     .disabled(anchors.isListening)
                 Toggle("Auto-anchor every 3 min", isOn: Binding(
@@ -177,7 +192,7 @@ struct AlignmentObserveView: View {
             } header: {
                 Text("ShazamKit anchor (experiment)")
             } footer: {
-                Text("Listens to the speaker with the microphone and compares ShazamKit's song position with the app's. Works only where the mic hears the audio. Measures only; nothing on screen changes.")
+                Text("Listens to the speaker with the microphone and compares ShazamKit's song position with the app's. Works only where the mic hears the audio. Self-heal Measure learns and logs only. Apply moves the offset on the running session by the learned correction, after about three anchors.")
             }
 
             Section("Active session") {

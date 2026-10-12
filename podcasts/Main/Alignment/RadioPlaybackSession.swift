@@ -61,8 +61,10 @@ final class RadioPlaybackSession {
                                      selectionPolicy: KCRWAlignmentConfiguration.selectionPolicy,
                                      clockPolicy: KCRWAlignmentConfiguration.clockPolicy)
     private let feedSkew: () -> Double
-    /// The Debug feed skew the selection policy currently reflects.
+    private let correction: (UUID) -> Double
+    /// The Debug feed skew and the self-healing correction the selection policy currently reflects.
     private var appliedSkew = 0.0
+    private var appliedCorrection = 0.0
     private var offsetLogged = false
     private var token: Any?
     private var statusToken: Any?
@@ -98,7 +100,8 @@ final class RadioPlaybackSession {
          install: Install? = nil,
          remove: @escaping Remove = { $0.removeTimeObserver($1) },
          observeStatus: ObserveStatus? = nil,
-         feedSkew: @escaping () -> Double = { ObserveSwitchStore.shared.feedSkew }) {
+         feedSkew: @escaping () -> Double = { ObserveSwitchStore.shared.feedSkew },
+         correction: ((UUID) -> Double)? = nil) {
         self.player = player
         self.item = item
         self.generation = generation
@@ -131,6 +134,7 @@ final class RadioPlaybackSession {
         }
         self.remove = remove
         self.feedSkew = feedSkew
+        self.correction = correction ?? { AlignmentCorrection.shared.value(for: $0) }
         startedAt = now()
         snapshot = RadioAlignmentSnapshot(generation: generation,
                                           endpoint: AlignmentProbeLog.safeEndpoint(endpoint),
@@ -155,6 +159,12 @@ final class RadioPlaybackSession {
         Self.active = self
         publisher?.isPlayerPlaying = { [weak self] in self?.lastStatus == .playing }
         refreshOffsetPolicy()
+        #if DEBUG
+        // The self-healing loop is for the running app; a test host drives it directly.
+        if mode == .apply, ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            SelfHealController.shared.ensureRunning()
+        }
+        #endif
         if mode == .apply { alignedState.beginApplying(stationId: stationId, generation: generation) }
         emit("[align] session start gen=\(AlignmentProbeLog.shortID(generation)) "
             + "endpoint=\(AlignmentProbeLog.safeEndpoint(endpoint)) "
@@ -287,16 +297,22 @@ final class RadioPlaybackSession {
         }
     }
 
-    /// Applies the Debug feed skew to the selection policy when it differs from the one in use. The skew is
+    /// Applies the Debug feed skew and the self-healing correction to the selection policy when it differs from the one in use. The skew is
     /// the experiment's perturbation: it moves the effective `+160 s`, and the title and lyric position move with it.
     private func refreshOffsetPolicy() {
         let skew = feedSkew()
-        guard skew != appliedSkew || (skew != 0 && !offsetLogged) else { return }
+        let healed = mode == .apply ? correction(generation) : 0
+        let changed = skew != appliedSkew || healed != appliedCorrection
+        guard changed || ((skew != 0 || healed != 0) && !offsetLogged) else { return }
         appliedSkew = skew
+        appliedCorrection = healed
         offsetLogged = true
-        state.updateSelectionPolicy(AlignmentOffset.policy(skew: skew))
-        let offset = AlignmentOffset.effective(base: KCRWAlignmentConfiguration.selectionPolicy.feedToProgramOffset, skew: skew)
-        emit("[align] policy offset=\(String(format: "%.1f", offset)) s (feed skew \(String(format: "%+.1f", skew)) s)")
+        state.updateSelectionPolicy(AlignmentOffset.policy(skew: skew, correction: healed))
+        let offset = AlignmentOffset.effective(base: KCRWAlignmentConfiguration.selectionPolicy.feedToProgramOffset,
+                                               skew: skew, correction: healed)
+        var text = "[align] policy offset=\(String(format: "%.1f", offset)) s (feed skew \(String(format: "%+.1f", skew)) s"
+        if healed != 0 { text += ", self-heal correction \(String(format: "%+.1f", healed)) s" }
+        emit(text + ")")
     }
 
     /// Status changes, from KVO or from a sample. Drives the stall record and `audioStopped`.

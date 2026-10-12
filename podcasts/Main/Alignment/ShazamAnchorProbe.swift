@@ -18,6 +18,7 @@ final class ShazamAnchorProbe: ObservableObject {
     private let source: OffsetAnchorSource
     private let moment: () -> AlignedMoment?
     private let feedSkew: () -> Double
+    private let correction: @MainActor () -> Double
     private let route: () -> String
     private let uptime: () -> TimeInterval
     private let emit: (String) -> Void
@@ -27,6 +28,7 @@ final class ShazamAnchorProbe: ObservableObject {
     init(source: OffsetAnchorSource = ShazamManagedAnchorSource(),
          moment: @escaping () -> AlignedMoment? = ShazamAnchorProbe.currentMoment,
          feedSkew: @escaping () -> Double = { ObserveSwitchStore.shared.feedSkew },
+         correction: @escaping @MainActor () -> Double = { AlignmentCorrection.shared.current },
          route: @escaping () -> String = ShazamAnchorProbe.currentRoute,
          uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          emit: @escaping (String) -> Void = { FileLog.shared.addMessage($0) },
@@ -35,6 +37,7 @@ final class ShazamAnchorProbe: ObservableObject {
         self.source = source
         self.moment = moment
         self.feedSkew = feedSkew
+        self.correction = correction
         self.route = route
         self.uptime = uptime
         self.emit = emit
@@ -73,15 +76,17 @@ final class ShazamAnchorProbe: ObservableObject {
                 return nil
             }
             let skew = feedSkew()
+            let applied = correction()
             let measurement = AnchorMeasurement(
                 aligned: after, shazam: match,
-                effectiveOffset: AlignmentOffset.effective(base: KCRWAlignmentConfiguration.selectionPolicy.feedToProgramOffset, skew: skew),
-                feedSkew: skew)
+                effectiveOffset: AlignmentOffset.effective(base: KCRWAlignmentConfiguration.selectionPolicy.feedToProgramOffset,
+                                                           skew: skew, correction: applied),
+                feedSkew: skew, correction: applied)
             emit(measurement.logLine())
             measurements.insert(measurement, at: 0)
             if measurements.count > Self.maxKept { measurements.removeLast(measurements.count - Self.maxKept) }
             if measurement.identityMatches {
-                learners.add(OffsetAnchor(time: uptime(), delta: measurement.deltaVersusFrozenOffset), route: route())
+                learners.add(OffsetAnchor(time: uptime(), delta: measurement.correctionNeeded), route: route())
                 status = String(format: "Anchored: audio is %+.1f s from the app", measurement.delta)
             } else {
                 status = "Heard a different song than the app shows; not used"
@@ -90,8 +95,13 @@ final class ShazamAnchorProbe: ObservableObject {
         }
     }
 
-    /// The learner's correction for the current route, versus the frozen offset. Positive: the audio is ahead.
+    /// The learner's correction for the current route. Positive: the audio is ahead of the app.
     var learnedCorrection: Double? { learners.correction(route: route()) }
+    var learnerAnchorCount: Int { learners.anchorCount(route: route()) }
+    var learnerRejectedCount: Int { learners.rejectedCount(route: route()) }
+
+    /// Forgets what was learned, for a new session or a changed skew.
+    func resetLearning() { learners.reset() }
 
     func startAuto(every interval: TimeInterval) {
         stopAuto()

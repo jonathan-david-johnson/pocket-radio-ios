@@ -17,6 +17,15 @@ enum AlignmentMode: String, CaseIterable, Equatable {
     case apply
 }
 
+/// What the Debug self-healing offset does. `off`: nothing runs by itself (the Anchor now button still works).
+/// `measure`: anchors run and the learner learns, and nothing is applied. `apply`: the learned correction moves the
+/// feed-to-program offset on the running session.
+enum SelfHealMode: String, CaseIterable, Equatable {
+    case off
+    case measure
+    case apply
+}
+
 /// Debug-only alignment mode for the KCRW probe. Off by default. In Release builds it is always
 /// off and cannot be set. Tests must inject `UserDefaults(suiteName:)`. The type keeps its
 /// Observe-era name because `PlaybackItem` still refers to it.
@@ -24,6 +33,7 @@ final class ObserveSwitchStore {
     static let key = "PocketRadio.alignment.mode"
     static let pollDriverKey = "PocketRadio.alignment.pollDriver"
     static let feedSkewKey = "PocketRadio.alignment.feedSkew"
+    static let selfHealKey = "PocketRadio.alignment.selfHeal"
     /// The feed skew is clamped to ±this many seconds.
     static let feedSkewLimit = 15.0
 
@@ -63,6 +73,22 @@ final class ObserveSwitchStore {
     /// True when the mode is Observe or Apply. Kept for `PlaybackItem`'s endpoint choice, which
     /// applies to both.
     var isObserveOn: Bool { mode != .off }
+
+    /// Debug-only. Off in Release. Launch with `-PocketRadio.alignment.selfHeal apply` to set it for a run.
+    var selfHeal: SelfHealMode {
+        get {
+            #if DEBUG
+            return defaults.string(forKey: Self.selfHealKey).flatMap(SelfHealMode.init(rawValue:)) ?? .off
+            #else
+            return .off
+            #endif
+        }
+        set {
+            #if DEBUG
+            defaults.set(newValue.rawValue, forKey: Self.selfHealKey)
+            #endif
+        }
+    }
 
     /// Debug-only. Seconds added to the feed-to-program offset (`+160 s`), to mimic a feed that runs late
     /// (positive) or early (negative) against the stream, for testing the self-healing offset. Zero in

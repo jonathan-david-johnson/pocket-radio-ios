@@ -12,6 +12,8 @@ struct OffsetAnchor: Equatable {
 /// (`testParameterSweep`): a window of 7, a 2 s outlier threshold and a run of 3 gave the lowest error in
 /// every simulated world with no flip-flops.
 struct OffsetLearnerConfig: Equatable {
+    init(maxCorrection: Double = 10) { self.maxCorrection = maxCorrection }
+
     /// Anchors kept for the median.
     var window = 7
     /// Anchors needed before the first correction is reported. Three let a median outvote one wrong anchor.
@@ -128,6 +130,8 @@ struct OffsetLearnerStore {
     }
 
     func correction(route: String) -> Double? { learners[route]?.correction }
+    func anchorCount(route: String) -> Int { learners[route]?.anchors.count ?? 0 }
+    func rejectedCount(route: String) -> Int { learners[route]?.rejectedCount ?? 0 }
 
     mutating func reset() { learners = [:] }
 }

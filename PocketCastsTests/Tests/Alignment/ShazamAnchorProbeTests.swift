@@ -93,7 +93,7 @@ final class ShazamAnchorProbeTests: XCTestCase {
 
         XCTAssertEqual(measurement.delta, 0, accuracy: 0.001)
         XCTAssertEqual(measurement.trueOffset, 157, accuracy: 0.001)
-        XCTAssertEqual(measurement.deltaVersusFrozenOffset, 3, accuracy: 0.001, "what the learner is given")
+        XCTAssertEqual(measurement.correctionNeeded, 0, accuracy: 0.001, "the skewed app is already right, so nothing is needed")
     }
 
     func test_theLearnerReportsACorrectionAfterThreeIdentityCheckedAnchors() async {
@@ -159,6 +159,19 @@ final class ShazamAnchorProbeTests: XCTestCase {
         XCTAssertTrue(probe.status.contains("timed out"))
         XCTAssertEqual(source.cancelled, 1)
         XCTAssertFalse(probe.isListening)
+    }
+
+    func test_anAppliedCorrectionIsInTheOffsetInUseAndTheTotalAsked() {
+        let match = AnchorMatch(title: "Fine", artist: "The Cardigans", matchOffset: 0, predictedOffset: 100,
+                                confidence: 1, frequencySkew: 0)
+        // 3 s needed in all. 2 s are already applied, so the app (offset 158) is 1 s behind the audio.
+        let measurement = AnchorMeasurement(
+            aligned: AlignedMoment(title: "Fine", artist: "The Cardigans", occurrenceID: "o", songSeconds: 99),
+            shazam: match, effectiveOffset: 158, feedSkew: 0, correction: 2)
+        XCTAssertEqual(measurement.delta, 1, accuracy: 0.001)
+        XCTAssertEqual(measurement.correctionNeeded, 3, accuracy: 0.001)
+        XCTAssertEqual(measurement.trueOffset, 157, accuracy: 0.001, "the same answer whatever is applied")
+        XCTAssertTrue(measurement.logLine().contains("correction=+2.0"))
     }
 
     func test_aMissingEntitlementIsExplained() {

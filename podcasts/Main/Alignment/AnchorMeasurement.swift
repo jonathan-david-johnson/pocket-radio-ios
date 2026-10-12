@@ -18,15 +18,19 @@ struct AlignedMoment: Equatable {
 struct AnchorMeasurement: Equatable {
     let aligned: AlignedMoment
     let shazam: AnchorMatch
-    /// The feed-to-program offset in use when the anchor was read, in seconds.
+    /// The feed-to-program offset in use when the anchor was read, in seconds, with the skew and any
+    /// self-healing correction included.
     let effectiveOffset: Double
     let feedSkew: Double
+    /// The self-healing correction that was applied when the anchor was read.
+    var correction: Double = 0
 
     var delta: Double { shazam.predictedOffset - aligned.songSeconds }
     var trueOffset: Double { effectiveOffset - delta }
-    /// `delta` against the frozen `+160 s` alone: the Debug feed skew taken out. This is what the learner learns,
-    /// so a skew set for the experiment shows up as a change in the offset to find, not as noise.
-    var deltaVersusFrozenOffset: Double { delta - feedSkew }
+    /// The total correction this anchor asks for. `delta` is what is left after the correction already applied, so the
+    /// two add up. This is what the learner is given, so its target stays the same as the applied correction moves.
+    /// The Debug feed skew stays in: it is the error the learner is meant to undo.
+    var correctionNeeded: Double { delta + correction }
     var identityMatches: Bool {
         AnchorIdentity.matches(alignedTitle: aligned.title, alignedArtist: aligned.artist,
                                shazamTitle: shazam.title, shazamArtist: shazam.artist)
@@ -38,7 +42,7 @@ struct AnchorMeasurement: Equatable {
             + "shazam=\"\(shazam.title) — \(shazam.artist)\" predicted=\(String(format: "%.1f", shazam.predictedOffset)) "
             + "matchOffset=\(String(format: "%.1f", shazam.matchOffset)) conf=\(confidence) skewHz=\(String(format: "%.4f", shazam.frequencySkew)) "
             + "delta=\(String(format: "%+.1f", delta)) offset=\(String(format: "%.1f", effectiveOffset)) "
-            + "feedSkew=\(String(format: "%+.1f", feedSkew)) trueOffset=\(String(format: "%.1f", trueOffset)) "
+            + "feedSkew=\(String(format: "%+.1f", feedSkew)) correction=\(String(format: "%+.1f", correction)) trueOffset=\(String(format: "%.1f", trueOffset)) "
             + "identity=\(identityMatches ? "match" : "MISMATCH")"
     }
 }
