@@ -8,7 +8,7 @@ import XCTest
 final class AlignmentObserveViewModelTests: XCTestCase {
     private let suiteName = "AlignmentObserveViewModelTests"
     private var defaults: UserDefaults!
-    private var store: ObserveSwitchStore!
+    private var store: AlignmentSwitchStore!
     private var now: TimeInterval = 1000
     private var session: RadioPlaybackSession?
     private var provided: RadioPlaybackSession?
@@ -19,7 +19,7 @@ final class AlignmentObserveViewModelTests: XCTestCase {
         super.setUp()
         defaults = UserDefaults(suiteName: suiteName)
         defaults.removePersistentDomain(forName: suiteName)
-        store = ObserveSwitchStore(defaults: defaults)
+        store = AlignmentSwitchStore(defaults: defaults)
         now = 1000
         session = nil
         provided = nil
@@ -41,10 +41,11 @@ final class AlignmentObserveViewModelTests: XCTestCase {
     private func makeSession() -> RadioPlaybackSession {
         let item = AVPlayerItem(asset: AVMutableComposition())
         let s = RadioPlaybackSession(
-            player: AVPlayer(playerItem: item), item: item, endpoint: endpoint, driver: .playbackTicks,
+            player: AVPlayer(playerItem: item), item: item, endpoint: endpoint,
             now: { [unowned self] in now }, emit: { _ in }, flush: {},
             fetch: { KCRWFeedResult(entries: [], statusCode: 500, cacheAgeSeconds: nil, failure: "x") },
-            install: { _, _ in NSObject() }, remove: { _, _ in }, observeStatus: { _, _ in NSObject() })
+            install: { _, _ in NSObject() }, remove: { _, _ in }, observeStatus: { _, _ in NSObject() },
+            skew: { _ in 160 }, startsPoller: false)
         session = s
         provided = s
         return s
@@ -54,15 +55,13 @@ final class AlignmentObserveViewModelTests: XCTestCase {
         rows.first { $0.label == label }?.value
     }
 
-    func testModeAndDriverDefaultOffAndPersistInSuite() {
+    func testModeDefaultsOffAndPersistsInSuite() {
         let model = makeModel()
         XCTAssertEqual(model.mode, .off)
-        XCTAssertEqual(model.pollDriver, .timer)
-        model.mode = .apply
-        model.pollDriver = .playbackTicks
-        let reread = ObserveSwitchStore(defaults: UserDefaults(suiteName: suiteName)!)
-        XCTAssertEqual(reread.mode, .apply)
-        XCTAssertEqual(reread.pollDriver, .playbackTicks)
+        model.mode = .on
+        let reread = AlignmentSwitchStore(defaults: UserDefaults(suiteName: suiteName)!)
+        XCTAssertEqual(reread.mode, .on)
+        XCTAssertTrue(reread.isOn)
     }
 
     func testNoActiveSession() {

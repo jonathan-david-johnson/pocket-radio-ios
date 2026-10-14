@@ -1,8 +1,8 @@
 import XCTest
 @testable import podcasts
 
-/// The self-healing offset learner against simulated worlds. These are the criteria from the ShazamKit
-/// experiment: converge fast, stay accurate, ignore bad anchors, follow a real change, never flip-flop.
+/// The anchor learner against simulated worlds (ADR 0010). The criteria:
+/// converge fast, stay accurate, ignore bad anchors, follow a real change, never flip-flop.
 final class OffsetLearnerTests: XCTestCase {
     private let twoHours: TimeInterval = 7200
     private let config = OffsetLearnerConfig()
@@ -73,17 +73,6 @@ final class OffsetLearnerTests: XCTestCase {
         var learner = OffsetLearner()
         learner.add(anchor(0, .nan)); learner.add(anchor(.infinity, 3))
         XCTAssertTrue(learner.anchors.isEmpty)
-    }
-
-    func testRoutesLearnIndependently() {
-        var store = OffsetLearnerStore()
-        (0..<3).forEach { store.add(anchor(Double($0), 3), route: "speaker") }
-        (0..<3).forEach { store.add(anchor(Double($0), 6), route: "car") }
-        XCTAssertEqual(store.correction(route: "speaker") ?? -1, 3, accuracy: 0.001)
-        XCTAssertEqual(store.correction(route: "car") ?? -1, 6, accuracy: 0.001)
-        XCTAssertNil(store.correction(route: "headphones"))
-        store.reset()
-        XCTAssertNil(store.correction(route: "speaker"))
     }
 
     // MARK: - Simulated worlds

@@ -23,7 +23,7 @@ enum AnchorOutcome: Equatable {
 }
 
 /// A source of ground truth about what is audible. Production listens to the microphone through ShazamKit;
-/// tests script it. See the ShazamKit experiment.
+/// tests script it. See ADR 0010.
 protocol OffsetAnchorSource {
     func anchor() async -> AnchorOutcome
     func cancel()

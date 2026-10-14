@@ -3,7 +3,7 @@ import MediaPlayer
 import XCTest
 @testable import podcasts
 
-/// Station detail's lyrics in Apply: the aligned song, one clock and one correction that survive
+/// Station detail's lyrics when aligned: the aligned song, one clock and one skew that survive
 /// opening full-screen lyrics. The loader, the ticks and the saved-offset store are fakes; the
 /// aligned state is in memory. Nothing touches the network, `UserDefaults.standard` or `lyric_offsets`.
 @MainActor
@@ -20,13 +20,18 @@ final class StationDetailLyricsTests: XCTestCase {
         }
     }
 
-    private final class Store: LyricOffsetStore, @unchecked Sendable {
-        private let lock = NSLock()
-        private var calls = 0
-        var callCount: Int { lock.withLock { calls } }
-        func fetchOffsets() async -> [String: Int] { lock.withLock { calls += 1 }; return [:] }
-        func savedOffset(stationId: String) -> Int? { lock.withLock { calls += 1 }; return nil }
-        func saveOffset(stationId: String, seconds: Int) async { lock.withLock { calls += 1 } }
+    /// Saved skews for the test, so nothing reads or writes the device's real ones.
+    private final class SkewBox {
+        private(set) var values: [String: Double] = [:]
+        private(set) var nudges: [Double] = []
+        var adjuster: SkewAdjuster {
+            SkewAdjuster(current: { [self] in values[$0] ?? 160 },
+                         nudge: { [self] id, delta in
+                             nudges.append(delta)
+                             values[id] = (values[id] ?? 160) + delta
+                             return values[id] ?? 160
+                         })
+        }
     }
 
     private final class Ticks {
@@ -49,7 +54,7 @@ final class StationDetailLyricsTests: XCTestCase {
     private let generation = UUID()
     private let base = Date(timeIntervalSince1970: 1_700_000_000)
     private var loader = Loader()
-    private var store = Store()
+    private var skews = SkewBox()
     private var ticks = Ticks()
     private var savedInfo: [String: Any]?
     private var navs: [UINavigationController] = []
@@ -102,8 +107,8 @@ final class StationDetailLyricsTests: XCTestCase {
         let lyrics = LyricSyncController(
             stationId: stationId, stationDisplayTitle: "KCRW",
             loader: { [loader] artist, title, album in await loader.load(artist: artist, title: title, album: album) },
-            offsetStore: store,
-            scheduleTicks: { [ticks] in ticks.schedule($0) })
+            scheduleTicks: { [ticks] in ticks.schedule($0) },
+            skew: skews.adjuster)
         let station = RadioStation(stationId: stationId, name: "KCRW", streamUrl: "https://example.test/stream")
         let vc = StationDetailViewController(station: station, lyricSync: lyrics)
         let nav = UINavigationController(rootViewController: vc)
@@ -192,36 +197,35 @@ final class StationDetailLyricsTests: XCTestCase {
         XCTAssertEqual(lyrics.currentOccurrenceID, "occ-1")
     }
 
-    func testApplyNeverTouchesSavedOffsets() async {
+    func testANudgeMovesOnlyTheStationSkew() async {
         publishSong("Song A", occ: "occ-1", at: 100)
         samplePosition(1, occ: "occ-1")
-        let (vc, lyrics) = makeDetail(applying)
+        let (_, lyrics) = makeDetail(applying)
         await lyrics.waitForFetch()
-        vc.adjustLyricOffset(by: 1)
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        lyrics.adjustOffset(by: 0.5)
 
-        XCTAssertEqual(store.callCount, 0)
+        XCTAssertEqual(skews.values, [applying: 159.5])
     }
 
     // MARK: Leaving station detail
 
-    func testApplyKeepsTheClockAndCorrectionWhileFullScreenLyricsIsOpen() async throws {
+    func testApplyKeepsTheClockAndSkewWhileFullScreenLyricsIsOpen() async throws {
         seedFeed(applying, [entry("Feed Top", at: 300), entry("Aligned", at: 200)])
         publishSong("Aligned", occ: "occ-1", at: 200)
         samplePosition(6, occ: "occ-1")
         let (vc, lyrics) = makeDetail(applying)
         await lyrics.waitForFetch()
-        vc.adjustLyricOffset(by: 1)
-        let before = lyrics.correctedPosition()
+        lyrics.adjustOffset(by: 0.5)
+        let before = lyrics.alignedPosition()
 
         vc._selectRowForTesting(1)
         vc.viewDidDisappear(false)   // what pushing a full-screen screen does to the screen beneath it
 
-        XCTAssertEqual(before, 7)
+        XCTAssertEqual(before, 6)
         XCTAssertTrue(ticks.isRunning, "no second timer and the first one keeps running")
         XCTAssertEqual(ticks.started, 1)
-        XCTAssertEqual(lyrics.correction, 1)
-        XCTAssertEqual(lyrics.correctedPosition(), 7)
+        XCTAssertEqual(lyrics.currentSkew, 159.5)
+        XCTAssertEqual(lyrics.alignedPosition(), 6)
         XCTAssertEqual(lyrics.currentOccurrenceID, "occ-1")
     }
 
@@ -230,12 +234,11 @@ final class StationDetailLyricsTests: XCTestCase {
         samplePosition(6, occ: "occ-1")
         let (vc, lyrics) = makeDetail(applying)
         await lyrics.waitForFetch()
-        vc.adjustLyricOffset(by: 1)
 
         vc.viewDidDisappear(false)
 
         XCTAssertFalse(ticks.isRunning)
-        XCTAssertEqual(lyrics.correction, 0)
+        XCTAssertNil(lyrics.alignedPosition())
         XCTAssertFalse(lyrics.hasLyrics)
     }
 
@@ -314,7 +317,7 @@ final class StationDetailLyricsTests: XCTestCase {
         XCTAssertNil(lyricsScreen.alignedClock)
     }
 
-    func testTheFullScreenNudgeAdjustsTheSameCorrection() async throws {
+    func testTheFullScreenNudgeMovesTheStationSkew() async throws {
         seedFeed(applying, [entry("Aligned", at: 200)])
         publishSong("Aligned", occ: "occ-1", at: 200)
         samplePosition(6, occ: "occ-1")
@@ -323,11 +326,11 @@ final class StationDetailLyricsTests: XCTestCase {
         vc._selectRowForTesting(0)
         let lyricsScreen = try XCTUnwrap(vc.navigationController?.topViewController as? LyricsViewController)
 
-        let adjusted = vc.lyricsViewController(lyricsScreen, adjustLyricOffsetBy: 1)
+        let clock = try XCTUnwrap(lyricsScreen.alignedClock)
+        XCTAssertEqual(clock.adjust(0.5), 159.5)
 
-        XCTAssertEqual(adjusted, 1)
-        XCTAssertEqual(lyrics.correction, 1)
-        XCTAssertEqual(store.callCount, 0)
+        XCTAssertEqual(lyrics.currentSkew, 159.5)
+        XCTAssertEqual(skews.values, [applying: 159.5])
     }
 }
 #endif

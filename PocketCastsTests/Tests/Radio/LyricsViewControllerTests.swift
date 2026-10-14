@@ -3,13 +3,13 @@ import XCTest
 @testable import podcasts
 
 /// Full-screen lyrics in Apply reads station detail's clock: the same position, the same line and
-/// the same correction, with no timer or `Date()` of its own. The loader and the clock are fakes.
+/// the same skew, with no timer or `Date()` of its own. The loader and the clock are fakes.
 @MainActor
 final class LyricsViewControllerTests: XCTestCase {
     /// A stand-in for station detail's clock that the test moves by hand.
     private final class FakeClock {
         var position: TimeInterval?
-        var correction: TimeInterval = 0
+        var skew: TimeInterval = 160
         private var subscribers: [Int: () -> Void] = [:]
         private var nextID = 0
         private(set) var adjustCalls = 0
@@ -23,12 +23,12 @@ final class LyricsViewControllerTests: XCTestCase {
         var clock: AlignedLyricsClock {
             AlignedLyricsClock(
                 occurrenceID: "occ-1",
-                position: { [unowned self] in self.position.map { $0 + self.correction } },
-                correction: { [unowned self] in self.correction },
+                position: { [unowned self] in self.position.map { $0 - (self.skew - 160) } },
+                skew: { [unowned self] in self.skew },
                 adjust: { [unowned self] delta in
                     self.adjustCalls += 1
-                    self.correction += delta
-                    return self.correction
+                    self.skew -= delta   // a later song position is a smaller skew
+                    return self.skew
                 },
                 subscribe: { [unowned self] handler in
                     let id = self.nextID
@@ -36,15 +36,6 @@ final class LyricsViewControllerTests: XCTestCase {
                     self.subscribers[id] = handler
                     return { [weak self] in self?.subscribers[id] = nil }
                 })
-        }
-    }
-
-    private final class Delegate: LyricsViewControllerDelegate {
-        var calls: [TimeInterval] = []
-        var handler: (TimeInterval) -> TimeInterval = { _ in 0 }
-        func lyricsViewController(_ viewController: LyricsViewController, adjustLyricOffsetBy delta: TimeInterval) -> TimeInterval {
-            calls.append(delta)
-            return handler(delta)
         }
     }
 
@@ -120,36 +111,33 @@ final class LyricsViewControllerTests: XCTestCase {
         XCTAssertFalse(vc._statusForTesting.hidden)
     }
 
-    // MARK: The shared correction
+    // MARK: The shared skew
 
-    func testNudgeAdjustsTheSharedCorrectionAndTheLabelShowsIt() async {
+    func testNudgeMovesTheSharedSkewAndTheLabelShowsIt() async {
         let clock = FakeClock(position: 4.5)
         let vc = await makeScreen(clock: clock)
-        let delegate = Delegate()
-        delegate.handler = { clock.clock.adjust($0) }
-        vc.delegate = delegate
         XCTAssertEqual(vc._highlightedRowForTesting, 0)
-        XCTAssertEqual(vc._offsetLabelForTesting, "+0s")
+        XCTAssertEqual(vc._offsetLabelForTesting, "Skew 160.0 s")
 
-        vc._nudgeForTesting(1)
+        vc._nudgeForTesting(0.5)
 
-        XCTAssertEqual(delegate.calls, [1])
-        XCTAssertEqual(clock.correction, 1)
-        XCTAssertEqual(vc._offsetLabelForTesting, "+1s")
+        XCTAssertEqual(clock.adjustCalls, 1)
+        XCTAssertEqual(clock.skew, 159.5, "+ moves the song position forward, so the skew goes down")
+        XCTAssertEqual(vc._offsetLabelForTesting, "Skew 159.5 s")
         XCTAssertEqual(vc._highlightedRowForTesting, 1, "the nudge moves the line at once")
 
-        vc._nudgeForTesting(-2)
-        XCTAssertEqual(vc._offsetLabelForTesting, "-1s")
+        vc._nudgeForTesting(-1)
+        XCTAssertEqual(vc._offsetLabelForTesting, "Skew 160.5 s")
         XCTAssertEqual(vc._highlightedRowForTesting, 0)
     }
 
-    func testReturningToTheScreenKeepsPositionAndCorrection() async {
+    func testReturningToTheScreenKeepsPositionAndSkew() async {
         let clock = FakeClock(position: 4.5)
-        clock.correction = 1
+        clock.skew = 159
         let vc = await makeScreen(clock: clock)
         vc.viewDidAppear(false)
         XCTAssertEqual(vc._highlightedRowForTesting, 1)
-        XCTAssertEqual(vc._offsetLabelForTesting, "+1s")
+        XCTAssertEqual(vc._offsetLabelForTesting, "Skew 159.0 s")
 
         vc.viewDidDisappear(false)
         XCTAssertEqual(clock.subscriberCount, 0, "closing the screen unsubscribes")
@@ -157,7 +145,7 @@ final class LyricsViewControllerTests: XCTestCase {
         vc.viewDidAppear(false)
         XCTAssertEqual(clock.subscriberCount, 1)
         XCTAssertEqual(vc._highlightedRowForTesting, 1)
-        XCTAssertEqual(vc._offsetLabelForTesting, "+1s")
+        XCTAssertEqual(vc._offsetLabelForTesting, "Skew 159.0 s")
         XCTAssertEqual(clock.adjustCalls, 0)
     }
 
@@ -171,7 +159,7 @@ final class LyricsViewControllerTests: XCTestCase {
         XCTAssertEqual(vc._highlightedRowForTesting, 2)
     }
 
-    // MARK: Off, Observe and rows that are not the current song
+    // MARK: Off and rows that are not the current song
 
     func testWithoutAClockTheCurrentSongKeepsItsOwnTimer() async {
         let vc = await makeScreen(clock: nil, isCurrentSong: true, offset: 6)
@@ -191,10 +179,11 @@ final class LyricsViewControllerTests: XCTestCase {
         XCTAssertTrue(vc._offsetControlsHiddenForTesting)
     }
 
-    func testWithoutAClockTheNudgeKeepsTheLocalCopy() async {
+    func testWithoutAClockThereIsNothingToNudge() async {
         let vc = await makeScreen(clock: nil, isCurrentSong: true, offset: 4)
-        vc._nudgeForTesting(2)
-        XCTAssertEqual(vc._offsetLabelForTesting, "+2s")
+        XCTAssertTrue(vc._offsetControlsHiddenForTesting, "Off has no skew, so no + and −")
+        vc._nudgeForTesting(0.5)
+        XCTAssertNil(vc._offsetLabelForTesting.flatMap { $0.isEmpty ? nil : $0 })
     }
 }
 #endif

@@ -19,6 +19,7 @@ final class RadioPlaybackSessionTests: XCTestCase {
         var removes = 0
         var flushes = 0
         var now: TimeInterval = 1000
+        var skew = 160.0
         var snapshots: [RadioAlignmentSnapshot] = []
         var sessions: [RadioPlaybackSession] = []
     }
@@ -83,7 +84,7 @@ final class RadioPlaybackSessionTests: XCTestCase {
         }
     }
 
-    private func makeSession(driver: AlignmentPollDriver = .playbackTicks,
+    private func makeSession(startsPoller: Bool = false,
                              generation: UUID? = nil,
                              item: AVPlayerItem? = nil,
                              fetch: RadioPlaybackSession.Fetch? = nil) -> RadioPlaybackSession {
@@ -93,7 +94,6 @@ final class RadioPlaybackSessionTests: XCTestCase {
             item: item ?? self.item,
             generation: generation ?? UUID(),
             endpoint: endpoint,
-            driver: driver,
             now: { harness.now },
             emit: { harness.lines.append($0) },
             flush: { harness.flushes += 1 },
@@ -107,7 +107,9 @@ final class RadioPlaybackSessionTests: XCTestCase {
             observeStatus: { _, handler in
                 harness.statusHandler = handler
                 return NSObject()
-            })
+            },
+            skew: { _ in harness.skew },
+            startsPoller: startsPoller)
         session.onSnapshot = { harness.snapshots.append($0) }
         harness.sessions.append(session)
         return session
@@ -255,7 +257,7 @@ final class RadioPlaybackSessionTests: XCTestCase {
 
     func testInFlightFeedResultDeliveredAfterStopIsDropped() async {
         let gate = Gate()
-        let session = makeSession(driver: .timer, fetch: gatedFetch(gate))
+        let session = makeSession(startsPoller: true, fetch: gatedFetch(gate))
         let started = await waitUntil { gate.started == 1 && gate.continuation != nil }
         XCTAssertTrue(started)
         let before = session.snapshot
@@ -291,7 +293,7 @@ final class RadioPlaybackSessionTests: XCTestCase {
 
     func testStopCancelsTheTimerPoller() async {
         let gate = Gate()
-        let session = makeSession(driver: .timer, fetch: gatedFetch(gate))
+        let session = makeSession(startsPoller: true, fetch: gatedFetch(gate))
         let started = await waitUntil { gate.started == 1 && gate.continuation != nil }
         XCTAssertTrue(started)
 
@@ -327,7 +329,7 @@ final class RadioPlaybackSessionTests: XCTestCase {
         _ = makeSession(generation: generation)
 
         XCTAssertEqual(harness.lines.first,
-                       "[align] session start gen=ABCDEF12 endpoint=streams.kcrw.com/e24_aac/playlist.m3u8 driver=ticks mode=observe")
+                       "[align] session start gen=ABCDEF12 endpoint=streams.kcrw.com/e24_aac/playlist.m3u8")
         for line in harness.lines {
             XCTAssertFalse(line.contains("secret"))
             XCTAssertFalse(line.contains("pw"))
@@ -335,42 +337,9 @@ final class RadioPlaybackSessionTests: XCTestCase {
         }
     }
 
-    func testTickDriverStartsExactlyOneRequestWhileNeverReturning() async {
-        let gate = Gate()
-        let session = makeSession(driver: .playbackTicks, fetch: gatedFetch(gate))
-        for _ in 0..<60 {
-            harness.now += 1
-            harness.callback?(.zero)
-        }
-        let started = await waitUntil { gate.started >= 1 }
-        XCTAssertTrue(started)
-        try? await Task.sleep(nanoseconds: 50_000_000)
-
-        XCTAssertEqual(gate.started, 1)
-        XCTAssertEqual(session.monitorPolls.count, 1)
-    }
-
-    func testTickDriverStartsNextPollOnThirtiethTickAfterCompletion() async {
-        let gate = Gate()
-        let session = makeSession(driver: .playbackTicks, fetch: gatedFetch(gate))
-        harness.callback?(.zero)
-        _ = await waitUntil { gate.continuation != nil }
-        gate.continuation?.resume(returning: feed([("Song A", "Artist A", base)]))
-        gate.continuation = nil
-        _ = await waitUntil { session.snapshot.historyCount == 1 }
-        XCTAssertEqual(session.monitorPolls.count, 1)
-
-        for _ in 2..<30 { harness.now += 1; harness.callback?(.zero) }
-        XCTAssertEqual(session.monitorPolls.count, 1)
-        harness.now += 1
-        harness.callback?(.zero)
-
-        XCTAssertEqual(session.monitorPolls.count, 2)
-    }
-
     func testTimerDriverFetchesImmediatelyOnceAndTicksDoNotStartPolls() async {
         let gate = Gate()
-        let session = makeSession(driver: .timer, fetch: gatedFetch(gate))
+        let session = makeSession(startsPoller: true, fetch: gatedFetch(gate))
         let started = await waitUntil { gate.started == 1 }
         XCTAssertTrue(started)
 
@@ -386,7 +355,7 @@ final class RadioPlaybackSessionTests: XCTestCase {
 
     func testPollResultsAreLoggedAndCountedAsAttempts() async {
         let ok = feed([("Song A", "Artist A", base)], age: 4)
-        let okSession = makeSession(driver: .timer, fetch: { ok })
+        let okSession = makeSession(startsPoller: true, fetch: { ok })
         _ = await waitUntil { okSession.snapshot.historyCount == 1 }
         XCTAssertTrue(harness.lines.contains("[align] poll n=1 t=0.0 ok entries=1 age=4.0"), harness.lines.joined(separator: "\n"))
         XCTAssertEqual(okSession.monitorPolls, [AlignmentMonitorPoll(elapsed: 0, succeeded: true)])
@@ -395,7 +364,7 @@ final class RadioPlaybackSessionTests: XCTestCase {
 
         harness.lines = []
         let failure = failureResult("HTTP 500")
-        let failSession = makeSession(driver: .timer, fetch: { failure })
+        let failSession = makeSession(startsPoller: true, fetch: { failure })
         _ = await waitUntil { failSession.snapshot.feedStatus == "HTTP 500" }
         XCTAssertTrue(harness.lines.contains("[align] poll n=1 t=0.0 fail reason=HTTP 500"), harness.lines.joined(separator: "\n"))
         XCTAssertEqual(failSession.monitorPolls, [AlignmentMonitorPoll(elapsed: 0, succeeded: false)])
@@ -414,7 +383,7 @@ final class RadioPlaybackSessionTests: XCTestCase {
 
         let decisions = harness.lines.filter { $0.hasPrefix("[align] decision") }
         XCTAssertEqual(decisions.count, 1)
-        XCTAssertEqual(decisions.first, "[align] decision t=10.0 candidate=\"Song A — Artist A\" songSec=30.0 reason=estimated +160s; not verified audible")
+        XCTAssertEqual(decisions.first, "[align] decision t=10.0 candidate=\"Song A — Artist A\" songSec=30.0 reason=estimated from the skew; not verified audible")
         XCTAssertEqual(harness.lines.filter { $0.hasPrefix("[align] clock") }.count, 1)
         XCTAssertEqual(harness.lines.filter { $0.hasPrefix("[align] probe gen=") }.count, 2)
 
@@ -540,27 +509,6 @@ final class RadioPlaybackSessionTests: XCTestCase {
         }
     }
 
-    // MARK: - Poll driver setting
-
-    func testPollDriverDefaultsToTimerAndRoundTripsThroughInjectedSuite() throws {
-        let suite = "RadioPlaybackSessionTests.pollDriver"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defaults.removePersistentDomain(forName: suite)
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let store = ObserveSwitchStore(defaults: defaults)
-
-        XCTAssertEqual(store.pollDriver, .timer)
-        #if DEBUG
-        store.pollDriver = .playbackTicks
-        XCTAssertEqual(defaults.string(forKey: "PocketRadio.alignment.pollDriver"), "ticks")
-        XCTAssertEqual(store.pollDriver, .playbackTicks)
-        store.pollDriver = .timer
-        XCTAssertEqual(defaults.string(forKey: "PocketRadio.alignment.pollDriver"), "timer")
-        XCTAssertEqual(store.pollDriver, .timer)
-        #endif
-    }
-
-    // The first pause after playback records a verdict for the run before the pause counts as "audio stopped".
     func testFirstPauseAfterPlayingLogsAtPauseVerdictBeforeAudioStops() {
         let session = makeSession()
         for t in 0...10 {

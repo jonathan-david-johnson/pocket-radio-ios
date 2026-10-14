@@ -25,7 +25,7 @@ final class AlignedLyricsNavigationTests: XCTestCase {
                                                      feedTop: entry("Feed Top")), .none)
     }
 
-    func testOffAndObserveLoadTheFeedTopOnTheWallClock() {
+    func testOffLoadTheFeedTopOnTheWallClock() {
         let top = entry("Feed Top")
         XCTAssertEqual(AlignedLyricsPolicy.lyricLoad(applying: false, aligned: entry("A"), occurrenceID: "occ-1",
                                                      feedTop: top), .wallClock(top))
@@ -52,7 +52,7 @@ final class AlignedLyricsNavigationTests: XCTestCase {
                                                                 isMovingFromParent: false, isBeingDismissed: false))
     }
 
-    func testOffAndObserveAlwaysStopOnDisappear() {
+    func testOffAlwaysStopOnDisappear() {
         for open in [false, true] {
             for moving in [false, true] {
                 XCTAssertTrue(AlignedLyricsPolicy.shouldStopOnDisappear(applying: false, lyricsScreenOpen: open,
@@ -79,7 +79,7 @@ final class AlignedLyricsNavigationTests: XCTestCase {
                                                          wallClockCurrent: true))
     }
 
-    func testOffAndObserveKeepTheWallClockAnswer() {
+    func testOffKeepTheWallClockAnswer() {
         let entries = [entry("A"), entry("B")]
         XCTAssertTrue(AlignedLyricsPolicy.isCurrentSong(applying: false, row: 0, entries: entries, aligned: entry("B"),
                                                         wallClockCurrent: true))

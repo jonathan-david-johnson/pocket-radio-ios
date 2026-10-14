@@ -6,10 +6,10 @@ import StreamSession
 
 /// Owner of one `AVPlayerItem` for KCRW alignment. It samples the player once a second, keeps the
 /// StreamSession core, runs one feed poller, records the monitor data, and writes `[align]` log
-/// lines. In Observe it publishes nothing. In Apply it registers the station with
-/// `AlignedNowPlayingState` and hands every snapshot to `AlignedNowPlayingPublisher`, the only
-/// path to the lock screen and players. It never writes Now Playing fields, artwork or lyrics
-/// itself.
+/// lines. It registers the station with `AlignedNowPlayingState` and hands every snapshot to
+/// `AlignedNowPlayingPublisher`, the only path to the lock screen and players. It never writes Now
+/// Playing fields, artwork or lyrics itself. The station's skew (`AlignmentSkewStore`) is the feed-to-program
+/// offset it selects with, and a change to it takes effect at once.
 ///
 /// Main-actor isolated. `DefaultPlayer` is not, so it goes through `startOnMain` and
 /// `stopOnMain`.
@@ -30,8 +30,6 @@ final class RadioPlaybackSession {
     let generation: UUID
     let item: AVPlayerItem
     let endpoint: URL
-    let driver: AlignmentPollDriver
-    let mode: AlignmentMode
     let stationId: String
     /// Readout callback. Cleared on stop.
     var onSnapshot: ((RadioAlignmentSnapshot) -> Void)?
@@ -60,12 +58,10 @@ final class RadioPlaybackSession {
     private var state = SessionState(historyPolicy: KCRWAlignmentConfiguration.historyPolicy,
                                      selectionPolicy: KCRWAlignmentConfiguration.selectionPolicy,
                                      clockPolicy: KCRWAlignmentConfiguration.clockPolicy)
-    private let feedSkew: () -> Double
-    private let correction: (UUID) -> Double
-    /// The Debug feed skew and the self-healing correction the selection policy currently reflects.
-    private var appliedSkew = 0.0
-    private var appliedCorrection = 0.0
-    private var offsetLogged = false
+    private let skew: (String) -> Double
+    /// The skew the selection policy currently reflects. Nil until the first sample reads it.
+    private(set) var appliedSkew: Double?
+    private var skewObserver: NSObjectProtocol?
     private var token: Any?
     private var statusToken: Any?
     private var pollTask: Task<Void, Never>?
@@ -88,8 +84,6 @@ final class RadioPlaybackSession {
          item: AVPlayerItem,
          generation: UUID = UUID(),
          endpoint: URL,
-         driver: AlignmentPollDriver = .timer,
-         mode: AlignmentMode = .observe,
          stationId: String = "",
          alignedState: AlignedNowPlayingState = .shared,
          post: AlignedNowPlayingPublisher.Post? = nil,
@@ -100,26 +94,20 @@ final class RadioPlaybackSession {
          install: Install? = nil,
          remove: @escaping Remove = { $0.removeTimeObserver($1) },
          observeStatus: ObserveStatus? = nil,
-         feedSkew: @escaping () -> Double = { ObserveSwitchStore.shared.feedSkew },
-         correction: ((UUID) -> Double)? = nil) {
+         skew: ((String) -> Double)? = nil,
+         startsPoller: Bool = true) {
         self.player = player
         self.item = item
         self.generation = generation
         self.endpoint = endpoint
-        self.driver = driver
-        self.mode = mode
         self.stationId = stationId
         self.alignedState = alignedState
-        if mode == .apply {
-            if let post {
-                publisher = AlignedNowPlayingPublisher(stationId: stationId, generation: generation,
-                                                       state: alignedState, post: post, emit: emit)
-            } else {
-                publisher = AlignedNowPlayingPublisher(stationId: stationId, generation: generation,
-                                                       state: alignedState, emit: emit)
-            }
+        if let post {
+            publisher = AlignedNowPlayingPublisher(stationId: stationId, generation: generation,
+                                                   state: alignedState, post: post, emit: emit)
         } else {
-            publisher = nil
+            publisher = AlignedNowPlayingPublisher(stationId: stationId, generation: generation,
+                                                   state: alignedState, emit: emit)
         }
         self.now = now
         self.emit = emit
@@ -133,8 +121,7 @@ final class RadioPlaybackSession {
             feedClient = client
         }
         self.remove = remove
-        self.feedSkew = feedSkew
-        self.correction = correction ?? { AlignmentCorrection.shared.value(for: $0) }
+        self.skew = skew ?? { AlignmentSkewStore.shared.skew(for: $0) }
         startedAt = now()
         snapshot = RadioAlignmentSnapshot(generation: generation,
                                           endpoint: AlignmentProbeLog.safeEndpoint(endpoint),
@@ -158,20 +145,17 @@ final class RadioPlaybackSession {
 
         Self.active = self
         publisher?.isPlayerPlaying = { [weak self] in self?.lastStatus == .playing }
-        refreshOffsetPolicy()
-        #if DEBUG
-        // The self-healing loop is for the running app; a test host drives it directly.
-        if mode == .apply, ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
-            SelfHealController.shared.ensureRunning()
-        }
-        #endif
-        if mode == .apply { alignedState.beginApplying(stationId: stationId, generation: generation) }
+        alignedState.beginApplying(stationId: stationId, generation: generation)
         emit("[align] session start gen=\(AlignmentProbeLog.shortID(generation)) "
-            + "endpoint=\(AlignmentProbeLog.safeEndpoint(endpoint)) "
-            + "driver=\(driver == .timer ? "timer" : "ticks") mode=\(mode.rawValue)")
+            + "endpoint=\(AlignmentProbeLog.safeEndpoint(endpoint))")
+        refreshOffsetPolicy()
         token = installer(player, Self.tickHandler(for: self))
         statusToken = observer(player, Self.statusHandler(for: self))
-        if driver == .timer { startTimerPoller() }
+        skewObserver = NotificationCenter.default.addObserver(forName: .alignmentSkewDidChange, object: nil, queue: .main) { [weak self] note in
+            guard let id = note.userInfo?[AlignmentSkewStore.stationIdKey] as? String else { return }
+            MainActor.assumeIsolated { self?.skewChanged(stationId: id) }
+        }
+        if startsPoller { startTimerPoller() }
     }
 
     // MARK: - DefaultPlayer seam
@@ -179,15 +163,13 @@ final class RadioPlaybackSession {
     /// `DefaultPlayer` is not main-actor isolated. Creation happens on the main thread in
     /// practice; off main it logs and does nothing rather than crash.
     nonisolated static func startOnMain(player: AVPlayer, item: AVPlayerItem, endpoint: URL,
-                                        mode: AlignmentMode, stationId: String) -> RadioPlaybackSession? {
+                                        stationId: String) -> RadioPlaybackSession? {
         guard Thread.isMainThread else {
             FileLog.shared.addMessage("[align] session not started: not on the main thread")
             return nil
         }
         return MainActor.assumeIsolated {
-            RadioPlaybackSession(player: player, item: item, endpoint: endpoint,
-                                 driver: ObserveSwitchStore.shared.pollDriver,
-                                 mode: mode, stationId: stationId)
+            RadioPlaybackSession(player: player, item: item, endpoint: endpoint, stationId: stationId)
         }
     }
 
@@ -237,8 +219,10 @@ final class RadioPlaybackSession {
         token = nil
         (statusToken as? NSKeyValueObservation)?.invalidate()
         statusToken = nil
+        if let skewObserver { NotificationCenter.default.removeObserver(skewObserver) }
+        skewObserver = nil
         onSnapshot = nil
-        if mode == .apply { alignedState.endApplying(stationId: stationId, generation: generation) }
+        alignedState.endApplying(stationId: stationId, generation: generation)
         if Self.active === self { Self.active = nil }
         emit("[align] session stop gen=\(AlignmentProbeLog.shortID(generation)) reason=\(reason) "
             + "samples=\(monitorSamples.count) polls=\(monitorPolls.count)")
@@ -260,9 +244,6 @@ final class RadioPlaybackSession {
                status: player.timeControlStatus,
                mediaSeconds: item.currentTime().seconds,
                programDate: item.currentDate())
-        if driver == .playbackTicks, tickCount == 1 || tickCount % Int(Self.pollInterval) == 0 {
-            startPoll()
-        }
     }
 
     /// One paired player observation. Only this path can change the candidate.
@@ -297,23 +278,35 @@ final class RadioPlaybackSession {
         }
     }
 
-    /// Applies the Debug feed skew and the self-healing correction to the selection policy when it differs from the one in use. The skew is
-    /// the experiment's perturbation: it moves the effective `+160 s`, and the title and lyric position move with it.
+    /// Moves the selection policy to the station's skew when it differs from the one in use. The song selection, and
+    /// through it the title, the artwork and the song position behind the lyrics, all follow this one number.
     private func refreshOffsetPolicy() {
-        let skew = feedSkew()
-        let healed = mode == .apply ? correction(generation) : 0
-        let changed = skew != appliedSkew || healed != appliedCorrection
-        guard changed || ((skew != 0 || healed != 0) && !offsetLogged) else { return }
+        let skew = skew(stationId)
+        guard skew != appliedSkew else { return }
+        let first = appliedSkew == nil
         appliedSkew = skew
-        appliedCorrection = healed
-        offsetLogged = true
-        state.updateSelectionPolicy(AlignmentOffset.policy(skew: skew, correction: healed))
-        let offset = AlignmentOffset.effective(base: KCRWAlignmentConfiguration.selectionPolicy.feedToProgramOffset,
-                                               skew: skew, correction: healed)
-        var text = "[align] policy offset=\(String(format: "%.1f", offset)) s (feed skew \(String(format: "%+.1f", skew)) s"
-        if healed != 0 { text += ", self-heal correction \(String(format: "%+.1f", healed)) s" }
-        emit(text + ")")
+        let frozen = KCRWAlignmentConfiguration.selectionPolicy
+        state.updateSelectionPolicy(OccurrenceSelectionPolicy(feedToProgramOffset: skew,
+                                                              maxSelectedAge: frozen.maxSelectedAge,
+                                                              maxFeedSilence: frozen.maxFeedSilence))
+        emit("[align] skew \(String(format: "%.1f", skew)) s\(first ? " (session start)" : "")")
     }
+
+    /// A nudge or a heal changed this station's skew. Reads it and takes a sample now, so the title and the lyric
+    /// line move at once and not at the next one-second tick.
+    private func skewChanged(stationId changed: String) {
+        guard !isStopped, changed == stationId else { return }
+        tick()
+    }
+
+    /// The stream's program date now, read from the player's own clock. Nil while it has none.
+    func currentProgramDate() -> Date? {
+        guard !isStopped, player?.currentItem === item else { return nil }
+        return item.currentDate()
+    }
+
+    /// The rows the feed returned, for the heal to match a heard song against.
+    var feedRows: [Occurrence] { state.history.occurrences }
 
     /// Status changes, from KVO or from a sample. Drives the stall record and `audioStopped`.
     func statusChanged(_ status: AVPlayer.TimeControlStatus) {
@@ -346,7 +339,7 @@ final class RadioPlaybackSession {
         switch decision.selection {
         case .selected(let current):
             selection = current
-            reason = "estimated +160s; not verified audible"
+            reason = "estimated from the skew; not verified audible"
         case .unavailable(let why):
             selection = nil
             if case .invalid(let clockReason)? = decision.clock {

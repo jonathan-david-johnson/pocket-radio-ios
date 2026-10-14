@@ -16,8 +16,7 @@ final class AlignedNowPlayingTests: XCTestCase {
         var now: TimeInterval = 1000
         /// The state's injected clock for the lyric position. Tests move it by hand.
         var wall = Date(timeIntervalSince1970: 3_000_000_000)
-        var skew = 0.0
-        var correction = 0.0
+        var skew = 160.0
         var sessions: [RadioPlaybackSession] = []
     }
 
@@ -59,14 +58,14 @@ final class AlignedNowPlayingTests: XCTestCase {
         return KCRWFeedResult(entries: entries, statusCode: 200, cacheAgeSeconds: nil, failure: nil)
     }
 
-    private func makeSession(mode: AlignmentMode = .apply,
-                             stationId: String? = nil,
-                             generation: UUID = UUID()) -> RadioPlaybackSession {
+    private func makeSession(stationId: String? = nil,
+                             generation: UUID = UUID(),
+                             post: AlignedNowPlayingPublisher.Post? = nil) -> RadioPlaybackSession {
         let harness = self.harness
         let session = RadioPlaybackSession(
-            player: player, item: item, generation: generation, endpoint: endpoint, driver: .playbackTicks,
-            mode: mode, stationId: stationId ?? station, alignedState: state,
-            post: { harness.posts.append($0) },
+            player: player, item: item, generation: generation, endpoint: endpoint,
+            stationId: stationId ?? station, alignedState: state,
+            post: post ?? { harness.posts.append($0) },
             now: { harness.now },
             emit: { harness.lines.append($0) },
             flush: {},
@@ -74,8 +73,8 @@ final class AlignedNowPlayingTests: XCTestCase {
             install: { _, _ in NSObject() },
             remove: { _, _ in },
             observeStatus: { _, _ in NSObject() },
-            feedSkew: { harness.skew },
-            correction: { _ in harness.correction })
+            skew: { _ in harness.skew },
+            startsPoller: false)
         harness.sessions.append(session)
         return session
     }
@@ -104,9 +103,10 @@ final class AlignedNowPlayingTests: XCTestCase {
                                lastPollElapsed: nil, clockValid: true, trigger: trigger)
     }
 
-    /// A real selected occurrence, taken from a session that observed one row.
+    /// A real selected occurrence, taken from a session for another station that was given one row.
     private func realOccurrence(kind: String = "trackplay", title: String? = "T", artist: String? = "A") throws -> Occurrence {
-        let observer = makeSession(mode: .observe, stationId: "other")
+        let observer = makeSession(stationId: "other", post: { _ in })
+        defer { observer.stop() }
         observer.accept(feed([(title, artist, nil, nil, kind, base)]), requestedElapsed: 1, receivedElapsed: 2)
         tick(observer, elapsed: 10, media: 50, program: songAProgram)
         return try XCTUnwrap(observer.snapshot.selectedOccurrence)
@@ -504,21 +504,6 @@ final class AlignedNowPlayingTests: XCTestCase {
         XCTAssertEqual(harness.posts[safe: 1].flatMap(title), "Song A")
     }
 
-    func testObserveSessionNeverPostsAndNeverSetsState() {
-        let session = makeSession(mode: .observe)
-        session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
-        tick(session, elapsed: 10, media: 50, program: songAProgram)
-        XCTAssertNotNil(session.snapshot.candidate)
-        tick(session, elapsed: 11, media: 51, program: nil)
-
-        XCTAssertTrue(harness.posts.isEmpty)
-        XCTAssertNil(state.current)
-        XCTAssertFalse(state.isApplying(stationId: station))
-        session.stop()
-        XCTAssertFalse(state.isApplying(stationId: station))
-        XCTAssertFalse(harness.lines.contains { $0.hasPrefix("[align] publish") })
-    }
-
     // MARK: - 7 Lifecycle
 
     func testStopClearsApplyingCurrentAndArtwork() throws {
@@ -732,65 +717,70 @@ final class AlignedNowPlayingTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 27, accuracy: 0.001)
     }
 
-    // MARK: - Debug feed skew (self-healing experiment)
+    // MARK: - The station's skew
 
-    func testFeedSkewMovesTheEffectiveOffsetOnARunningSession() throws {
+    func testSkewMovesTheSongStartOnARunningSession() throws {
         let session = makeSession()
         session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
         tick(session, elapsed: 10, media: 50, program: songAProgram)
-        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 30, accuracy: 0.001, "offset 160: 30 s into the song")
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 30, accuracy: 0.001, "skew 160: 30 s into the song")
 
-        harness.skew = 5
+        harness.skew = 165
         tick(session, elapsed: 11, media: 51, program: songAProgram.addingTimeInterval(1))
-        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 26, accuracy: 0.001, "offset 165: the song starts 5 s later")
-        XCTAssertTrue(harness.lines.contains { $0.contains("policy offset=165.0 s (feed skew +5.0 s)") })
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 26, accuracy: 0.001, "skew 165: the song starts 5 s later")
+        XCTAssertTrue(harness.lines.contains { $0.contains("[align] skew 165.0 s") })
 
-        harness.skew = -4
+        harness.skew = 156
         tick(session, elapsed: 12, media: 52, program: songAProgram.addingTimeInterval(2))
-        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 36, accuracy: 0.001, "offset 156: 4 s earlier")
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 36, accuracy: 0.001, "skew 156: 4 s earlier")
+        XCTAssertEqual(session.appliedSkew, 156)
     }
 
-    func testASelfHealCorrectionShortensTheOffsetOnARunningApplySession() throws {
+    func testASkewOfZeroIsAValidSkew() throws {
+        harness.skew = 0
         let session = makeSession()
         session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
         tick(session, elapsed: 10, media: 50, program: songAProgram)
-        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 30, accuracy: 0.001)
-
-        harness.correction = 3
-        tick(session, elapsed: 11, media: 51, program: songAProgram.addingTimeInterval(1))
-        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 34, accuracy: 0.001, "offset 157: 3 s further into the song")
-        XCTAssertTrue(harness.lines.contains { $0.contains("policy offset=157.0 s (feed skew +0.0 s, self-heal correction +3.0 s)") })
-
-        harness.skew = 6
-        tick(session, elapsed: 12, media: 52, program: songAProgram.addingTimeInterval(2))
-        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 29, accuracy: 0.001, "skew +6 and correction +3: offset 163")
+        XCTAssertEqual(session.appliedSkew, 0)
+        XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 190, accuracy: 0.001, "no skew: the feed's clock taken as the stream's")
     }
 
-    func testObserveModeNeverAppliesTheCorrection() throws {
-        harness.correction = 5
-        let session = makeSession(mode: .observe)
-        session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
-        tick(session, elapsed: 10, media: 50, program: songAProgram)
-        XCTAssertFalse(harness.lines.contains { $0.contains("self-heal correction") })
-        XCTAssertEqual(session.snapshot.songSeconds ?? -1, 30, accuracy: 0.001)
-    }
-
-    func testNoSkewLogsNoPolicyLineAndKeepsTheFrozenOffset() throws {
+    func testTheSkewIsLoggedAtSessionStartAndOnlyWhenItChanges() throws {
         let session = makeSession()
         session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
         tick(session, elapsed: 10, media: 50, program: songAProgram)
         tick(session, elapsed: 11, media: 51, program: songAProgram.addingTimeInterval(1))
-        XCTAssertFalse(harness.lines.contains { $0.contains("policy offset") })
+
+        let skewLines = harness.lines.filter { $0.hasPrefix("[align] skew ") }
+        XCTAssertEqual(skewLines, ["[align] skew 160.0 s (session start)"])
         XCTAssertEqual(try XCTUnwrap(lyricSeconds()).seconds, 31, accuracy: 0.001)
     }
 
+    func testAChangedSkewForThisStationTakesAnImmediateSample() throws {
+        let session = makeSession()
+        session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
+        tick(session, elapsed: 10, media: 50, program: songAProgram)
+        let before = session.monitorSamples.count
+
+        harness.skew = 162
+        NotificationCenter.default.post(name: .alignmentSkewDidChange, object: nil,
+                                        userInfo: [AlignmentSkewStore.stationIdKey: "another-station"])
+        XCTAssertEqual(session.monitorSamples.count, before, "another station's skew is not this session's")
+        XCTAssertEqual(session.appliedSkew, 160)
+
+        NotificationCenter.default.post(name: .alignmentSkewDidChange, object: nil,
+                                        userInfo: [AlignmentSkewStore.stationIdKey: station])
+        XCTAssertEqual(session.monitorSamples.count, before + 1, "this station's skew is read at once, not at the next tick")
+        XCTAssertEqual(session.appliedSkew, 162)
+    }
+
     func testSkewedSelectionStillPublishesTheSameSong() throws {
-        harness.skew = 8
+        harness.skew = 168
         let session = makeSession()
         session.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
         tick(session, elapsed: 10, media: 50, program: songAProgram)
         XCTAssertEqual(publishedSong()?.title, "Song A")
-        XCTAssertTrue(harness.lines.contains { $0.contains("policy offset=168.0 s (feed skew +8.0 s)") }, "logged at the first sample")
+        XCTAssertTrue(harness.lines.contains { $0.contains("[align] skew 168.0 s (session start)") }, "logged at the first sample")
     }
 
     // MARK: - 8 Unavailable is explicit
@@ -827,15 +817,6 @@ final class AlignedNowPlayingTests: XCTestCase {
         tick(session, elapsed: 11, media: 51, program: nil)
         XCTAssertNil(lyricSeconds())
         XCTAssertNil(lyricSeconds("another-station"))
-    }
-
-    func testLyricPositionIsNilForASessionThatIsNotApplying() {
-        let observer = makeSession(mode: .observe)
-        observer.accept(feed([song("Song A", "Artist A", at: base)]), requestedElapsed: 1, receivedElapsed: 2)
-        tick(observer, elapsed: 10, media: 50, program: songAProgram)
-
-        XCTAssertNil(lyricSeconds())
-        XCTAssertFalse(state.isApplying(stationId: station))
     }
 
     func testLyricPositionIsNilOnceTheGenerationEnds() {

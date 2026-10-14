@@ -131,17 +131,17 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
         player = AVPlayer(playerItem: playerItem)
 
         #if !os(watchOS) && !APPCLIP && !os(tvOS)
-        // Debug Observe or Apply: monitor the measured endpoint. Only Apply publishes.
-        let alignmentMode = ObserveSwitchStore.shared.mode
+        // Debug alignment On: play the measured endpoint and let the aligned session drive titles.
+        let alignmentMode = AlignmentSwitchStore.shared.mode
         if KCRWAlignmentConfiguration.endpointOverride(for: episode, mode: alignmentMode) != nil,
            let player {
             alignmentSession = RadioPlaybackSession.startOnMain(player: player, item: playerItem,
                                                                 endpoint: KCRWAlignmentConfiguration.measuredEndpoint,
-                                                                mode: alignmentMode, stationId: episode.uuid)
+                                                                stationId: episode.uuid)
         }
 
-        // In Apply the aligned adapter is the single writer, so ICY titles are not observed.
-        if let radio = episode as? RadioStation, alignmentSession?.mode != .apply {
+        // With an aligned session that session is the single writer, so ICY titles are not observed.
+        if let radio = episode as? RadioStation, alignmentSession == nil {
             let observer = RadioMetadataObserver(stationId: radio.uuid)
             observer.attach(to: playerItem)
             radioMetadataObserver = observer

@@ -116,8 +116,19 @@ class StationDetailViewController: SimpleNotificationsViewController {
     private var isFavorited = false
     private var favoriteLoadTask: Task<Void, Never>?
 
-    private var fingerprinter: ACRFingerprinter?
-    private var isIdentifying = false
+    #if DEBUG
+    /// The status shown in the lyric header while the timing recalibrates, nil otherwise.
+    private var calibrationStatus: String?
+    /// The heal itself. Leaving the screen does not cancel it: it belongs to the session, and a cancelled heal would
+    /// open its listens back to back, which ShazamKit refuses.
+    private var calibrationTask: Task<Void, Never>?
+    /// How long the result stays in the header. Leaving the screen cancels this one.
+    private var calibrationHoldTask: Task<Void, Never>?
+    /// How long the result stays in the header before the lyrics return. Tests shorten it.
+    var calibrationResultHold: TimeInterval = 5
+    /// Runs the recalibration. Tests replace it so nothing listens to a microphone.
+    var recalibrationRunner: (@MainActor (@escaping @MainActor (String) -> Void) async -> Bool)?
+    #endif
 
     // MARK: - Remote control
 
@@ -133,14 +144,16 @@ class StationDetailViewController: SimpleNotificationsViewController {
 
     private var remoteObservers: [NSObjectProtocol] = []
 
-    private lazy var identifyButton: UIButton = {
+    /// Heals the station's skew: listens to the speaker with ShazamKit and sets the skew. It replaced the
+    /// ACR Identify button in this slot (ADR 0009). Shown only while an aligned session runs for this station.
+    private lazy var healButton: UIButton = {
         var config = UIButton.Configuration.tinted()
-        config.image = UIImage(systemName: "music.note.list")
+        config.image = UIImage(systemName: "staroflife.fill")
         config.cornerStyle = .capsule
         let btn = UIButton(configuration: config)
         btn.translatesAutoresizingMaskIntoConstraints = false
-        btn.accessibilityLabel = "Identify"
-        btn.addAction(UIAction { [weak self] _ in self?.identifyTrack() }, for: .touchUpInside)
+        btn.accessibilityLabel = "Recalibrate timing"
+        btn.addAction(UIAction { [weak self] _ in self?.recalibrateTiming() }, for: .touchUpInside)
         btn.isHidden = true
         return btn
     }()
@@ -176,7 +189,7 @@ class StationDetailViewController: SimpleNotificationsViewController {
         tracklistTable.delegate = self
         setupLyricHeader()
         tracklistTable.isHidden = (station.tracklistUrl == nil)
-        updateIdentifyButton()
+        updateHealButton()
 
         if let cached = RadioTracklistService.shared.cached(stationId: station.uuid) {
             self.entries = Array(cached.prefix(5))
@@ -218,9 +231,12 @@ class StationDetailViewController: SimpleNotificationsViewController {
         tracklistRefreshTask = nil
         pendingTracklistTask?.cancel()
         pendingTracklistTask = nil
-        fingerprinter?.cancel()
-        fingerprinter = nil
-        // Apply: pushing full-screen lyrics must not stop the shared clock or reset its correction (ADR 0005).
+        #if DEBUG
+        calibrationHoldTask?.cancel()
+        calibrationHoldTask = nil
+        calibrationStatus = nil
+        #endif
+        // Apply: pushing full-screen lyrics must not stop the shared clock (ADR 0005).
         if AlignedLyricsPolicy.shouldStopOnDisappear(applying: isApplying, lyricsScreenOpen: openLyricsScreen != nil,
                                                      isMovingFromParent: isMovingFromParent,
                                                      isBeingDismissed: isBeingDismissed) {
@@ -275,11 +291,12 @@ class StationDetailViewController: SimpleNotificationsViewController {
     }
 
     private func setupLayout() {
-        let buttonStack = UIStackView(arrangedSubviews: [identifyButton, playButton, favoriteButton])
+        let buttonStack = UIStackView(arrangedSubviews: [healButton, playButton, favoriteButton])
         buttonStack.axis = .horizontal
         buttonStack.spacing = 16
         buttonStack.alignment = .center
-        buttonStack.distribution = .equalSpacing
+        // Packed together and centered, so hiding the heal button never spreads the others to the edges.
+        buttonStack.distribution = .fill
         buttonStack.translatesAutoresizingMaskIntoConstraints = false
 
         let mainStack = UIStackView(arrangedSubviews: [logoView, nowPlayingTitleLabel, nowPlayingArtistLabel, remoteIndicatorLabel, buttonStack])
@@ -296,8 +313,6 @@ class StationDetailViewController: SimpleNotificationsViewController {
         NSLayoutConstraint.activate([
             logoView.widthAnchor.constraint(equalToConstant: 120),
             logoView.heightAnchor.constraint(equalToConstant: 120),
-
-            buttonStack.widthAnchor.constraint(equalTo: mainStack.widthAnchor),
 
             mainStack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 24),
             mainStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
@@ -411,7 +426,7 @@ class StationDetailViewController: SimpleNotificationsViewController {
     /// Apply: labels show the aligned song (the station name when unavailable) and the history marks
     /// its row. No-op for a station that is not applying.
     private func refreshAlignedDisplay() {
-        updateIdentifyButton()
+        updateHealButton()
         guard let display = AlignedConsumers.stationDisplay(stationId: station.uuid, stationName: station.displayableTitle()) else {
             alignedEntry = nil
             if showingAligned {
@@ -465,65 +480,61 @@ class StationDetailViewController: SimpleNotificationsViewController {
         nowPlayingArtistLabel.isHidden = !hasArtist
     }
 
-    // MARK: - ACR Fingerprinting
+    // MARK: - Timing recalibration
 
-    private func updateIdentifyButton() {
-        let hasTracklist = station.tracklistUrl != nil
-        identifyButton.isHidden = !hasTracklist || isApplying
-        updateIdentifyButtonTitle()
+    /// The header row holds the current lyric line, or the recalibration progress while that runs.
+    private var showsLyricHeader: Bool {
+        #if DEBUG
+        if calibrationStatus != nil { return true }
+        #endif
+        return lyricSync.hasLyrics
     }
 
-    private func updateIdentifyButtonTitle() {
-        var config = identifyButton.configuration
-        config?.image = UIImage(systemName: isIdentifying ? "waveform" : "music.note.list")
-        identifyButton.configuration = config
-        identifyButton.accessibilityLabel = isIdentifying ? "Listening…" : "Identify"
-        identifyButton.isEnabled = !isIdentifying
+    private func updateHealButton() {
+        #if DEBUG
+        healButton.isHidden = !isApplying
+        healButton.isEnabled = calibrationTask == nil
+        #else
+        healButton.isHidden = true
+        #endif
     }
 
-    private func identifyTrack() {
-        guard !isIdentifying, !isApplying,
-              let url = URL(string: station.streamUrl) else { return }
-        isIdentifying = true
-        updateIdentifyButtonTitle()
-
-        let fp = ACRFingerprinter(streamURL: url)
-        fingerprinter = fp
-        fp.identifyOnce { [weak self] result in
+    /// Runs a short calibration with ShazamKit and shows its progress in the lyric header.
+    private func recalibrateTiming() {
+        #if DEBUG
+        guard calibrationTask == nil, isApplying else { return }
+        showCalibration(HealMessage.listening(1))
+        updateHealButton()
+        calibrationTask = Task { [weak self] in
+            let report: @MainActor (String) -> Void = { self?.showCalibration($0) }
+            if let runner = self?.recalibrationRunner {
+                _ = await runner(report)
+            } else {
+                await SkewHealer.shared.heal(report: report)
+            }
             guard let self else { return }
-            self.isIdentifying = false
-            self.updateIdentifyButtonTitle()
-            self.insertACRResult(result)
-            Toast.show("\(result.displayTitle)")
-        } onError: { [weak self] _ in
-            guard let self else { return }
-            self.isIdentifying = false
-            self.updateIdentifyButtonTitle()
-            Toast.show("No match found")
+            self.calibrationTask = nil
+            self.updateHealButton()
+            // Leave the result up for a few seconds, then hand the header back to the lyrics.
+            self.calibrationHoldTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64((self?.calibrationResultHold ?? 0) * 1_000_000_000))
+                guard !Task.isCancelled, let self else { return }
+                self.calibrationStatus = nil
+                self.calibrationHoldTask = nil
+                self.tracklistTable.reloadSections([0], with: .none)
+            }
         }
+        #endif
     }
 
-    private func insertACRResult(_ result: ACRFingerprintResult) {
-        let entry = TracklistEntry(
-            title: result.title,
-            artist: result.artist,
-            album: result.album.isEmpty ? nil : result.album,
-            albumArtURL: nil,
-            playedAt: Date()
-        )
-        entries.insert(entry, at: 0)
-        if entries.count > 5 { entries = Array(entries.prefix(5)) }
-        tracklistTable.reloadData()
-
-        TrackArtworkResolver.shared.artworkURL(for: entry, station: station) { [weak self] artURL in
-            guard let self, let artURL, let idx = self.entries.firstIndex(of: entry) else { return }
-            let updated = TracklistEntry(title: entry.title, artist: entry.artist,
-                                         album: entry.album, albumArtURL: artURL,
-                                         playedAt: entry.playedAt)
-            self.entries[idx] = updated
-            self.tracklistTable.reloadRows(at: [IndexPath(row: idx, section: 0)], with: .none)
-        }
+    #if DEBUG
+    private func showCalibration(_ message: String) {
+        let hadHeader = calibrationStatus != nil || lyricSync.hasLyrics
+        calibrationStatus = message
+        lyricHeaderLabel.text = message
+        if !hadHeader { tracklistTable.reloadSections([0], with: .none) }
     }
+    #endif
 
     @MainActor
     private func refetchTracklist() async {
@@ -568,7 +579,14 @@ class StationDetailViewController: SimpleNotificationsViewController {
     var _nowPlayingLabelsForTesting: (title: String?, titleHidden: Bool, artist: String?, artistHidden: Bool) {
         (nowPlayingTitleLabel.text, nowPlayingTitleLabel.isHidden, nowPlayingArtistLabel.text, nowPlayingArtistLabel.isHidden)
     }
-    var _identifyHiddenForTesting: Bool { identifyButton.isHidden }
+    var _healHiddenForTesting: Bool { healButton.isHidden }
+    #if DEBUG
+    var _calibrationStatusForTesting: String? { calibrationStatus }
+    var _headerTextForTesting: String? { lyricHeaderLabel.text }
+    var _showsHeaderForTesting: Bool { showsLyricHeader }
+    func _tapHealForTesting() { recalibrateTiming() }
+    var _calibrationRunningForTesting: Bool { calibrationTask != nil }
+    #endif
     func _selectRowForTesting(_ row: Int) { tableView(tracklistTable, didSelectRowAt: IndexPath(row: row, section: 0)) }
     func _reloadLyricsForTesting() { reloadLyrics() }
     var _markedRowsForTesting: [Int] {
@@ -648,12 +666,6 @@ class StationDetailViewController: SimpleNotificationsViewController {
         ])
     }
 
-    /// Nudge the live sync correction and immediately re-evaluate the current line.
-    /// Returns the new offset so LyricsViewController can keep its local copy in sync.
-    @discardableResult
-    func adjustLyricOffset(by delta: TimeInterval) -> TimeInterval {
-        lyricSync.adjustOffset(by: delta)
-    }
 }
 
 // MARK: - UITableViewDataSource
@@ -686,11 +698,11 @@ extension StationDetailViewController: UITableViewDataSource {
 
 extension StationDetailViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
-        lyricSync.hasLyrics ? lyricHeaderView : nil
+        showsLyricHeader ? lyricHeaderView : nil
     }
 
     func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
-        lyricSync.hasLyrics ? 44 : 0
+        showsLyricHeader ? 44 : 0
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
@@ -717,22 +729,10 @@ extension StationDetailViewController: UITableViewDelegate {
         let elapsed = isCurrentSong && !applying ? (lyricSync.lyricStartDate.map { Date().timeIntervalSince($0) } ?? 0) : 0
 
         let vc = LyricsViewController(entry: entry, stationName: station.displayableTitle(), offset: elapsed, isCurrentSong: isCurrentSong)
-        vc.lyricOffset = lyricSync.lyricOffset
         vc.alignedClock = clock
         vc.lyricLoader = lyricSync.loader
-        vc.delegate = self
         openLyricsScreen = vc
         navigationController?.pushViewController(vc, animated: true)
-    }
-}
-
-// MARK: - LyricsViewControllerDelegate
-
-extension StationDetailViewController: LyricsViewControllerDelegate {
-    func lyricsViewController(_ viewController: LyricsViewController, adjustLyricOffsetBy delta: TimeInterval) -> TimeInterval {
-        // Apply: the full screen nudges this screen's own correction, for its occurrence only.
-        if let clock = viewController.alignedClock { return clock.adjust(delta) }
-        return lyricSync.adjustOffset(by: delta)
     }
 }
 
@@ -740,6 +740,10 @@ extension StationDetailViewController: LyricsViewControllerDelegate {
 
 extension StationDetailViewController: LyricSyncControllerDelegate {
     func lyricSyncController(_ c: LyricSyncController, didUpdateHeaderText text: String) {
+        #if DEBUG
+        // While the timing recalibrates the header shows its progress, not the lyric line.
+        if calibrationStatus != nil { return }
+        #endif
         lyricHeaderLabel.text = text
     }
 

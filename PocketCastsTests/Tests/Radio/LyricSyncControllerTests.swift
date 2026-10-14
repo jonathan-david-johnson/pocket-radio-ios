@@ -56,29 +56,24 @@ private final class FakeLyricLoader: @unchecked Sendable {
     }
 }
 
-private final class FakeOffsetStore: LyricOffsetStore, @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: [String: Int]
-    private var fetches = 0
-    private var reads = 0
-    private var saves: [(stationId: String, seconds: Int)] = []
+/// Stands in for the saved skews. `nudge` adds to the station's skew, as the real store does.
+private final class FakeSkew {
+    let seed: Double
+    private(set) var values: [String: Double] = [:]
+    private(set) var nudges: [Double] = []
 
-    init(saved: [String: Int] = [:]) { stored = saved }
+    init(seed: Double = 160) { self.seed = seed }
 
-    var fetchCount: Int { lock.withLock { fetches } }
-    var readCount: Int { lock.withLock { reads } }
-    var saved: [(stationId: String, seconds: Int)] { lock.withLock { saves } }
+    func current(_ stationId: String) -> Double { values[stationId] ?? seed }
 
-    func fetchOffsets() async -> [String: Int] {
-        lock.withLock { fetches += 1; return stored }
+    func nudge(_ stationId: String, _ delta: Double) -> Double {
+        nudges.append(delta)
+        values[stationId] = current(stationId) + delta
+        return values[stationId] ?? seed
     }
 
-    func savedOffset(stationId: String) -> Int? {
-        lock.withLock { reads += 1; return stored[stationId] }
-    }
-
-    func saveOffset(stationId: String, seconds: Int) async {
-        lock.withLock { saves.append((stationId, seconds)) }
+    var adjuster: SkewAdjuster {
+        SkewAdjuster(current: { [self] in current($0) }, nudge: { [self] in nudge($0, $1) })
     }
 }
 
@@ -153,28 +148,28 @@ private final class Rig {
     static let epoch = Date(timeIntervalSince1970: 1_700_000_000)
 
     let loader = FakeLyricLoader()
-    let store: FakeOffsetStore
+    let skew = FakeSkew()
     let clock = FakeClock(Rig.epoch)
     let ticks = FakeTicks()
     let position = FakePosition()
     let delegate = RecordingDelegate()
     let controller: LyricSyncController
 
-    init(savedOffsets: [String: Int] = [:], stationId: String = Rig.stationId) {
-        store = FakeOffsetStore(saved: savedOffsets)
+    init(stationId: String = Rig.stationId) {
         let loader = self.loader
         let clock = self.clock
         let ticks = self.ticks
         let position = self.position
+        let skew = self.skew
         controller = LyricSyncController(
             stationId: stationId,
             stationDisplayTitle: Rig.stationTitle,
             loader: { artist, title, album in await loader.load(artist: artist, title: title, album: album) },
-            offsetStore: store,
             clock: { clock.read() },
             scheduleTicks: { ticks.schedule($0) },
             positionSource: { position.read($0) },
-            isApplying: { _ in position.applying }
+            isApplying: { _ in position.applying },
+            skew: skew.adjuster
         )
         controller.delegate = delegate
     }
@@ -198,7 +193,7 @@ private final class Rig {
     }
 }
 
-// MARK: - Off and Observe: the wall-clock path
+// MARK: - Off: the wall-clock path
 
 @MainActor
 final class LyricSyncControllerWallClockTests: XCTestCase {
@@ -264,17 +259,6 @@ final class LyricSyncControllerWallClockTests: XCTestCase {
         XCTAssertEqual(rig.delegate.albums, ["Line 1", "Line 2", "Line 3"])
     }
 
-    func testSavedOffsetIsReadOnLoadAndShiftsTheLine() async {
-        let rig = Rig(savedOffsets: [Rig.stationId: 6])
-        // 6 s saved offset on a 0 s elapsed: position 6 is Line 2.
-        await rig.load("Song", result: Rig.synced(duration: 100), playedAt: Rig.epoch)
-
-        XCTAssertEqual(rig.store.fetchCount, 1)
-        XCTAssertEqual(rig.store.readCount, 1)
-        XCTAssertEqual(rig.controller.lyricOffset, 6)
-        XCTAssertEqual(rig.delegate.lastHeader, "♪ Line 2")
-    }
-
     func testIntroWindowShowsStationUntilTheFirstLine() async {
         let rig = Rig()
         let lines = LyricsResult(lines: [LyricLine(timestamp: 20, text: "Late"), LyricLine(timestamp: 30, text: "Later")],
@@ -334,39 +318,12 @@ final class LyricSyncControllerWallClockTests: XCTestCase {
         XCTAssertEqual(rig.controller.currentSongKey, "artist|other")
     }
 
-    func testAdjustOffsetMovesTheLineAtOnceAndSavesAfterTheDebounce() async throws {
-        let rig = Rig()
-        await rig.load("Song", result: Rig.synced(duration: 100), playedAt: Rig.epoch)
-        XCTAssertEqual(rig.delegate.lastHeader, "♪ Line 1")
-
-        XCTAssertEqual(rig.controller.adjustOffset(by: 5), 5)
-        XCTAssertEqual(rig.delegate.lastHeader, "♪ Line 2")
-        XCTAssertEqual(rig.controller.adjustOffset(by: 7), 12)
-        XCTAssertEqual(rig.delegate.lastHeader, "♪ Line 3")
-        XCTAssertTrue(rig.store.saved.isEmpty, "the write waits for the debounce")
-
-        try await Task.sleep(nanoseconds: 1_100_000_000)
-        XCTAssertEqual(rig.store.saved.map(\.seconds), [12], "two nudges coalesce into one write")
-        XCTAssertEqual(rig.store.saved.map(\.stationId), [Rig.stationId])
-    }
-
-    func testAdjustOffsetWithoutAStationIdDoesNotSave() async throws {
-        let rig = Rig(stationId: "")
-        await rig.load("Song", result: Rig.synced(duration: 100), playedAt: Rig.epoch)
-        rig.controller.adjustOffset(by: 2)
-
-        try await Task.sleep(nanoseconds: 1_000_000_000)
-        XCTAssertTrue(rig.store.saved.isEmpty)
-    }
-
     func testStopClearsEverythingAndEndsTheTimer() async {
         let rig = Rig()
         await rig.load("Song", result: Rig.synced(duration: 100), playedAt: Rig.epoch)
-        rig.controller.adjustOffset(by: 3)
         rig.controller.stop()
 
         XCTAssertEqual(rig.controller.status, .none)
-        XCTAssertEqual(rig.controller.lyricOffset, 0)
         XCTAssertNil(rig.controller.currentSongKey)
         XCTAssertNil(rig.controller.lyricStartDate)
         XCTAssertFalse(rig.ticks.isRunning)
@@ -388,7 +345,7 @@ final class LyricSyncControllerWallClockTests: XCTestCase {
 @MainActor
 final class LyricSyncControllerApplyTests: XCTestCase {
     private func applyRig(position: Double = 0, occurrence: String = "occ-1") -> Rig {
-        let rig = Rig(savedOffsets: [Rig.stationId: 40])
+        let rig = Rig()
         rig.position.applying = true
         rig.position.value = (occurrence, position)
         return rig
@@ -438,16 +395,6 @@ final class LyricSyncControllerApplyTests: XCTestCase {
         XCTAssertEqual(rig.controller.status, .betweenTracks)
     }
 
-    func testApplyNeverReadsSavedOffsetsOnLoad() async {
-        let rig = applyRig(position: 1)
-        await rig.load("Song", result: Rig.synced(duration: 100), occurrenceID: "occ-1")
-
-        XCTAssertEqual(rig.store.fetchCount, 0, "no fetchLyricOffsets in Apply")
-        XCTAssertEqual(rig.store.readCount, 0, "no read of lyricOffsets in Apply")
-        XCTAssertEqual(rig.controller.lyricOffset, 0)
-        XCTAssertEqual(rig.delegate.lastHeader, "\u{266A} Line 1", "the saved 40 s offset is not applied")
-    }
-
     func testApplyNeverWritesTheLockScreenAlbum() async {
         let rig = applyRig(position: 6)
         await rig.load("Song", result: Rig.synced(duration: 100), occurrenceID: "occ-1")
@@ -478,14 +425,14 @@ final class LyricSyncControllerApplyTests: XCTestCase {
     }
 }
 
-// MARK: - Apply: unavailable, correction, late results
+// MARK: - Apply: unavailable, skew, late results
 
 @MainActor
 final class LyricSyncControllerApplyStateTests: XCTestCase {
     private let note = "\u{266A} "
 
     private func applyRig(position: Double? = 0, occurrence: String = "occ-1") -> Rig {
-        let rig = Rig(savedOffsets: [Rig.stationId: 40])
+        let rig = Rig()
         rig.position.applying = true
         rig.position.value = position.map { (occurrence, $0) }
         return rig
@@ -528,7 +475,7 @@ final class LyricSyncControllerApplyStateTests: XCTestCase {
         rig.ticks.fire()
         XCTAssertEqual(rig.controller.status, .betweenTracks, "the same state the full-screen view shows on this clock")
         XCTAssertEqual(rig.delegate.lastHeader, note + Rig.stationTitle)
-        XCTAssertNil(rig.controller.correctedPosition())
+        XCTAssertNil(rig.controller.alignedPosition())
     }
 
     func testThePositionIsAskedForTheControllersStation() async {
@@ -537,112 +484,93 @@ final class LyricSyncControllerApplyStateTests: XCTestCase {
         XCTAssertEqual(rig.position.askedStations, [Rig.stationId])
     }
 
-    // MARK: Correction is per occurrence; saved offsets untouched
+    // MARK: The nudge moves the station's skew
 
-    func testNudgeMovesTheLineAndNeverTouchesSavedOffsets() async throws {
+    func testOffHasNoSkewToMove() async {
+        let rig = Rig()
+        await rig.load("Song", result: Rig.synced(duration: 100), playedAt: Rig.epoch)
+        XCTAssertEqual(rig.delegate.lastHeader, "\u{266A} Line 1")
+
+        XCTAssertEqual(rig.controller.adjustOffset(by: 5), 160, "the skew in use, unchanged")
+        XCTAssertTrue(rig.skew.nudges.isEmpty, "nothing aligned, so nothing to nudge")
+        XCTAssertEqual(rig.delegate.lastHeader, "\u{266A} Line 1")
+        XCTAssertNil(rig.controller.alignedPosition())
+    }
+
+    func testNudgeMovesTheStationSkewAndNotTheLockScreenAlbum() async {
         let rig = applyRig(position: 1)
         await rig.load("Song", result: Rig.synced(duration: 100), occurrenceID: "occ-1")
         XCTAssertEqual(rig.delegate.lastHeader, note + "Line 1")
 
-        XCTAssertEqual(rig.controller.adjustOffset(by: 5), 5)
-        XCTAssertEqual(rig.controller.correction, 5)
-        XCTAssertEqual(rig.delegate.lastHeader, note + "Line 2")
-        XCTAssertEqual(rig.controller.adjustOffset(by: 7), 12)
-        XCTAssertEqual(rig.delegate.lastHeader, note + "Line 3")
-        XCTAssertEqual(rig.controller.correctedPosition(), 13)
-
-        try await Task.sleep(nanoseconds: 1_100_000_000)
-        XCTAssertTrue(rig.store.saved.isEmpty, "no upsertLyricOffset in Apply")
-        XCTAssertEqual(rig.store.fetchCount, 0)
-        XCTAssertEqual(rig.store.readCount, 0)
-        XCTAssertEqual(rig.controller.lyricOffset, 0)
+        // + moves the song position forward, which means the skew goes down.
+        XCTAssertEqual(rig.controller.adjustOffset(by: 0.5), 159.5)
+        XCTAssertEqual(rig.controller.adjustOffset(by: 0.5), 159)
+        XCTAssertEqual(rig.controller.currentSkew, 159)
+        XCTAssertEqual(rig.skew.values[Rig.stationId], 159)
+        XCTAssertEqual(rig.skew.nudges, [-0.5, -0.5])
         XCTAssertEqual(rig.delegate.albums, [])
     }
 
-    func testCorrectionFollowsTheMovingPosition() async {
-        let rig = applyRig(position: 1)
-        await rig.load("Song", result: Rig.synced(duration: 100), occurrenceID: "occ-1")
-        rig.controller.adjustOffset(by: -2)
-
-        rig.position.value = ("occ-1", 6)
-        rig.ticks.fire()
-        XCTAssertEqual(rig.controller.correctedPosition(), 4)
-        XCTAssertEqual(rig.delegate.lastHeader, note + "Line 1")
-    }
-
-    func testCorrectionSurvivesReloadingTheSameOccurrence() async {
+    func testTheLineFollowsThePositionTheSessionComputesFromTheNewSkew() async {
         let rig = applyRig(position: 1)
         await rig.load("Song", result: Rig.synced(duration: 100), occurrenceID: "occ-1")
         rig.controller.adjustOffset(by: 5)
 
-        await rig.load("Song", result: Rig.synced(duration: 100), occurrenceID: "occ-1")
-        XCTAssertEqual(rig.controller.correction, 5)
-        XCTAssertEqual(rig.loader.requests.count, 1)
+        // The session takes the new skew and the song position moves with it. The controller adds nothing of its own.
+        rig.position.value = ("occ-1", 6)
+        rig.ticks.fire()
+        XCTAssertEqual(rig.controller.alignedPosition(), 6)
+        XCTAssertEqual(rig.delegate.lastHeader, note + "Line 2")
     }
 
-    func testANewOccurrenceOfADifferentSongResetsTheCorrection() async {
+    func testTheSkewSurvivesANewOccurrence() async {
         let rig = applyRig(position: 1)
         await rig.load("Song", result: Rig.synced(duration: 100), occurrenceID: "occ-1")
         rig.controller.adjustOffset(by: 5)
 
         rig.position.value = ("occ-2", 1)
         await rig.load("Other", result: Rig.synced(duration: 100), occurrenceID: "occ-2")
-        XCTAssertEqual(rig.controller.correction, 0)
+        XCTAssertEqual(rig.controller.currentSkew, 155, "the skew belongs to the station, not the song")
         XCTAssertEqual(rig.delegate.lastHeader, note + "Line 1")
     }
 
-    func testARepeatPlayOfTheSameSongResetsTheCorrectionAndReloads() async {
+    func testARepeatPlayOfTheSameSongReloads() async {
         let rig = applyRig(position: 1)
         await rig.load("Song", result: Rig.synced(duration: 100), occurrenceID: "occ-1")
-        rig.controller.adjustOffset(by: 5)
 
         rig.position.value = ("occ-2", 1)
         await rig.load("Song", result: Rig.synced(duration: 100), occurrenceID: "occ-2")
         XCTAssertEqual(rig.loader.requests.count, 2, "same artist and title, new occurrence: reload")
-        XCTAssertEqual(rig.controller.correction, 0)
         XCTAssertEqual(rig.controller.currentOccurrenceID, "occ-2")
         XCTAssertEqual(rig.delegate.lastHeader, note + "Line 1")
     }
 
-    func testTheCorrectionIsNotAppliedToANewOccurrenceBeforeItReloads() async {
+    func testANudgeWithNoMatchingPositionIsIgnored() async {
         let rig = applyRig(position: 1)
         await rig.load("Song", result: Rig.synced(duration: 100), occurrenceID: "occ-1")
-        rig.controller.adjustOffset(by: 5)
+        rig.position.applying = false
 
-        rig.position.value = ("occ-2", 1)
-        XCTAssertNil(rig.controller.correctedPosition())
-        XCTAssertEqual(rig.controller.adjustOffset(by: 3), 5, "a nudge with no matching position is ignored")
-        XCTAssertEqual(rig.controller.correction, 5, "still the loaded occurrence's value, unchanged")
-
-        // The reload for the new occurrence starts from zero.
-        await rig.load("Song", result: Rig.synced(duration: 100), occurrenceID: "occ-2")
-        XCTAssertEqual(rig.controller.correction, 0)
+        XCTAssertEqual(rig.controller.adjustOffset(by: 3), 160, "not applying: nothing to nudge")
+        XCTAssertTrue(rig.skew.nudges.isEmpty)
     }
 
-    func testStopResetsTheCorrection() async {
+    func testStopEndsTheAlignedPosition() async {
         let rig = applyRig(position: 1)
         await rig.load("Song", result: Rig.synced(duration: 100), occurrenceID: "occ-1")
-        rig.controller.adjustOffset(by: 5)
         rig.controller.stop()
 
-        XCTAssertEqual(rig.controller.correction, 0)
-        XCTAssertNil(rig.controller.correctedPosition())
+        XCTAssertNil(rig.controller.alignedPosition())
         XCTAssertNil(rig.controller.currentOccurrenceID)
         XCTAssertFalse(rig.ticks.isRunning)
     }
 
-    func testCorrectedPositionIsNilWithoutAValidPositionOrOutsideApply() async {
+    func testAlignedPositionIsNilWithoutAValidPosition() async {
         let rig = applyRig(position: 6)
         await rig.load("Song", result: Rig.synced(duration: 100), occurrenceID: "occ-1")
-        XCTAssertEqual(rig.controller.correctedPosition(), 6)
+        XCTAssertEqual(rig.controller.alignedPosition(), 6)
 
         rig.position.value = nil
-        XCTAssertNil(rig.controller.correctedPosition())
-
-        let legacy = Rig()
-        await legacy.load("Song", result: Rig.synced(duration: 100), playedAt: Rig.epoch)
-        XCTAssertNil(legacy.controller.correctedPosition())
-        XCTAssertEqual(legacy.controller.correction, 0)
+        XCTAssertNil(rig.controller.alignedPosition())
     }
 
     // MARK: Late results are dropped
@@ -729,17 +657,16 @@ final class LyricSyncControllerSharedClockTests: XCTestCase {
         return rig
     }
 
-    func testClockReadsTheControllersCorrectedPositionAndCorrection() async {
+    func testClockReadsThePositionAndTheStationSkew() async {
         let rig = applyRig(position: 6)
         await rig.load("Song", result: Rig.synced(duration: 100), occurrenceID: "occ-1")
         let clock = rig.controller.lyricsClock(occurrenceID: "occ-1")
 
         XCTAssertEqual(clock.position(), 6)
-        XCTAssertEqual(clock.correction(), 0)
-        XCTAssertEqual(clock.adjust(1), 1)
-        XCTAssertEqual(rig.controller.correction, 1, "the full-screen nudge is the controller's own correction")
-        XCTAssertEqual(clock.position(), 7)
-        XCTAssertEqual(clock.correction(), 1)
+        XCTAssertEqual(clock.skew(), 160)
+        XCTAssertEqual(clock.adjust(0.5), 159.5)
+        XCTAssertEqual(rig.controller.currentSkew, 159.5, "the full-screen nudge moves the station's skew")
+        XCTAssertEqual(clock.skew(), 159.5)
     }
 
     func testClockForAnEarlierOccurrenceHasNoPositionAndCannotNudge() async {
@@ -750,9 +677,9 @@ final class LyricSyncControllerSharedClockTests: XCTestCase {
         await rig.load("Song B", result: Rig.synced(duration: 100), occurrenceID: "occ-2")
 
         XCTAssertNil(stale.position())
-        XCTAssertEqual(stale.correction(), 0)
-        XCTAssertEqual(stale.adjust(1), 0)
-        XCTAssertEqual(rig.controller.correction, 0, "a stale full screen cannot nudge the new song")
+        XCTAssertEqual(stale.skew(), 0)
+        XCTAssertEqual(stale.adjust(0.5), 0)
+        XCTAssertTrue(rig.skew.nudges.isEmpty, "a stale full screen cannot nudge the station")
     }
 
     func testClockHasNoPositionWhenTheControllerHasNone() async {
@@ -792,7 +719,7 @@ final class LyricSyncControllerSharedClockTests: XCTestCase {
         unsubscribe()
     }
 
-    func testOffAndObserveTicksNeverReachSubscribers() async {
+    func testOffTicksNeverReachSubscribers() async {
         let rig = Rig()
         await rig.load("Song", result: Rig.synced(duration: 100), playedAt: Rig.epoch)
         var heard = 0

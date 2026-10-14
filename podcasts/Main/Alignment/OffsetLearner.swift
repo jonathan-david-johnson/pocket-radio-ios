@@ -1,8 +1,9 @@
 #if !os(watchOS) && !APPCLIP && !os(tvOS)
 import Foundation
 
-/// One measurement of how far the app's song position is from the audio: `delta = truth − songSeconds`,
-/// taken at one instant. Positive means the audio is ahead of the app. `time` is any monotonic clock, in seconds.
+/// One measurement of a number that should be constant, taken at one instant. In the heal it is the skew an anchor
+/// implies. `delta` keeps the name from when the number was a correction.
+/// `time` is any monotonic clock, in seconds.
 struct OffsetAnchor: Equatable {
     let time: TimeInterval
     let delta: Double
@@ -30,10 +31,9 @@ struct OffsetLearnerConfig: Equatable {
     var maxAge: TimeInterval = 30 * 60
 }
 
-/// Learns the constant offset between the feed-based song position and the audio from a stream of
-/// anchors. Pure: no clock, no I/O. It is built to resist the three ways an anchor goes wrong: noise
+/// Learns a constant, such as the skew, from a stream of anchors. Pure: no clock, no I/O. It is built to resist the three ways an anchor goes wrong: noise
 /// (a median over a window), a wrong-song or bad match (held back as an outlier), and a real change in
-/// the feed's latency (a run of agreeing outliers replaces the window). See the ShazamKit experiment.
+/// the feed's latency (a run of agreeing outliers replaces the window). See ADR 0010.
 struct OffsetLearner {
     let config: OffsetLearnerConfig
     private(set) var anchors: [OffsetAnchor] = []
@@ -111,28 +111,5 @@ struct OffsetLearner {
         guard let low = values.min(), let high = values.max() else { return 0 }
         return high - low
     }
-}
-
-/// One learner per output route, because the mic hears the same speaker the same way every time but a
-/// different route has a different delay. A station change starts every route again.
-struct OffsetLearnerStore {
-    let config: OffsetLearnerConfig
-    private var learners: [String: OffsetLearner] = [:]
-
-    init(config: OffsetLearnerConfig = OffsetLearnerConfig()) {
-        self.config = config
-    }
-
-    mutating func add(_ anchor: OffsetAnchor, route: String) {
-        var learner = learners[route] ?? OffsetLearner(config: config)
-        learner.add(anchor)
-        learners[route] = learner
-    }
-
-    func correction(route: String) -> Double? { learners[route]?.correction }
-    func anchorCount(route: String) -> Int { learners[route]?.anchors.count ?? 0 }
-    func rejectedCount(route: String) -> Int { learners[route]?.rejectedCount ?? 0 }
-
-    mutating func reset() { learners = [:] }
 }
 #endif

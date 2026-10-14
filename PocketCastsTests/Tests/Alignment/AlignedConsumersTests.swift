@@ -248,11 +248,11 @@ final class AlignedConsumersTests: XCTestCase {
         XCTAssertEqual(nowPlaying(MPMediaItemPropertyAlbumTitle), "a lyric line")
     }
 
-    func testApplyingStationDetailHidesIdentifyAndOtherStationsKeepIt() {
+    func testApplyingStationDetailShowsTheRecalibrateButtonAndOtherStationsDoNot() {
         let applyingVC = makeDetail(stationId: applying, name: "KCRW", tracklistUrl: "https://example.test/tracklist")
         let otherVC = makeDetail(stationId: other, name: "Other", tracklistUrl: "https://example.test/tracklist")
-        XCTAssertTrue(applyingVC._identifyHiddenForTesting)
-        XCTAssertFalse(otherVC._identifyHiddenForTesting)
+        XCTAssertFalse(applyingVC._healHiddenForTesting)
+        XCTAssertTrue(otherVC._healHiddenForTesting)
     }
 
     func testApplyingStationDetailIgnoresIcyPostsAndKeepsTheAlignedLabels() {

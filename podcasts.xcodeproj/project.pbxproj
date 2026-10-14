@@ -54,7 +54,6 @@
 		10A4F7672C540DC00084D783 /* KidsProfileSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10A4F7662C540DC00084D783 /* KidsProfileSheet.swift */; };
 		10A4F7692C540EBE0084D783 /* KidsProfileSheetViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10A4F7682C540EBE0084D783 /* KidsProfileSheetViewModel.swift */; };
 		10DFE9312C5A889700957D0A /* CategoryPodcastsTable.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10DFE9302C5A889700957D0A /* CategoryPodcastsTable.swift */; };
-		24DDECA5FD1B45D983FAA12F /* ACRFingerprinter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C60D09E3DF5B4D4AABB3E45B /* ACRFingerprinter.swift */; };
 		3371B5B664664A93A92ABABC /* RemoteControlManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8E26CBF03954394AE3C86D5 /* RemoteControlManager.swift */; };
 		CC000001000000000000001A /* RemoteDevicePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000001000000000000001B /* RemoteDevicePickerView.swift */; };
 		3FC668C02F7CD3440072EBA8 /* XcodeTarget_podcasts in Frameworks */ = {isa = PBXBuildFile; productRef = 3FC668BF2F7CD3440072EBA8 /* XcodeTarget_podcasts */; };
@@ -2685,7 +2684,6 @@
 		BDFB53CA2362B9080001806E /* UpNextViewController.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = UpNextViewController.xib; sourceTree = "<group>"; };
 		BDFFC9AE2148A1460026D875 /* PCRoutePickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCRoutePickerView.swift; sourceTree = "<group>"; };
 		BDFFC9B02148E87E0026D875 /* VideoViewController+Seek.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "VideoViewController+Seek.swift"; sourceTree = "<group>"; };
-		C60D09E3DF5B4D4AABB3E45B /* ACRFingerprinter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ACRFingerprinter.swift; sourceTree = "<group>"; };
 		C701C25B2A8E82DC00AD9FAB /* PaidFeature.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PaidFeature.swift; sourceTree = "<group>"; };
 		C713D4EC2A04C90400A78468 /* ProfileDataViewModel.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ProfileDataViewModel.swift; sourceTree = "<group>"; };
 		C713D4ED2A04C90400A78468 /* ProfileImage.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ProfileImage.swift; sourceTree = "<group>"; };
@@ -3715,7 +3713,6 @@
 				4D11D3D52FAFB7780051B62B /* RadioMetadataObserver.swift */,
 				4D11D3D72FAFB7780051B62B /* RadioFavoritesSeeder.swift */,
 				4D11D3E12FAFB7780051B62B /* TracklistEntry.swift */,
-				C60D09E3DF5B4D4AABB3E45B /* ACRFingerprinter.swift */,
 				4D11D3E32FAFB7780051B62B /* RadioTracklistService.swift */,
 				4D7201022FAFB7780051B62B /* TrackArtworkResolver.swift */,
 				4D11D3E52FAFB7780051B62B /* TracklistCell.swift */,
@@ -7282,7 +7279,6 @@
 				4D11D3D42FAFB7780051B62B /* RadioMetadataObserver.swift in Sources */,
 				4D11D3D62FAFB7780051B62B /* RadioFavoritesSeeder.swift in Sources */,
 				4D11D3E02FAFB7780051B62B /* TracklistEntry.swift in Sources */,
-				24DDECA5FD1B45D983FAA12F /* ACRFingerprinter.swift in Sources */,
 				4D11D3E22FAFB7780051B62B /* RadioTracklistService.swift in Sources */,
 				4D7201012FAFB7780051B62B /* TrackArtworkResolver.swift in Sources */,
 				4D11D3E42FAFB7780051B62B /* TracklistCell.swift in Sources */,

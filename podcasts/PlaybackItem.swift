@@ -15,8 +15,8 @@ class PlaybackItem: NSObject {
 
     func createPlayerItem() -> AVPlayerItem? {
         #if !os(watchOS) && !APPCLIP && !os(tvOS)
-        // Debug Observe only: eligible KCRW stations play the measured HLS endpoint. Off is a no-op.
-        let override = KCRWAlignmentConfiguration.endpointOverride(for: episode, observeOn: ObserveSwitchStore.shared.isObserveOn)
+        // Debug alignment On only: eligible KCRW stations play the measured HLS endpoint. Off is a no-op.
+        let override = KCRWAlignmentConfiguration.endpointOverride(for: episode, mode: AlignmentSwitchStore.shared.mode)
         guard let url = override ?? EpisodeManager.urlForEpisode(episode) else { return nil }
         #else
         guard let url = EpisodeManager.urlForEpisode(episode) else { return nil }

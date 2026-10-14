@@ -13,30 +13,9 @@ extension LyricSyncControllerDelegate {
     func lyricSyncController(_ c: LyricSyncController, didUpdateNowPlayingAlbum text: String) {}
 }
 
-/// Where saved per-station lyric offsets live. The production store is Supabase through
-/// `RadioFavoritesManager`; tests inject a fake so nothing touches the real `lyric_offsets` table.
-protocol LyricOffsetStore {
-    func fetchOffsets() async -> [String: Int]
-    func savedOffset(stationId: String) -> Int?
-    func saveOffset(stationId: String, seconds: Int) async
-}
-
-struct RadioFavoritesLyricOffsetStore: LyricOffsetStore {
-    func fetchOffsets() async -> [String: Int] {
-        await RadioFavoritesManager.shared.fetchLyricOffsets()
-    }
-
-    func savedOffset(stationId: String) -> Int? {
-        RadioFavoritesManager.shared.lyricOffsets[stationId]
-    }
-
-    func saveOffset(stationId: String, seconds: Int) async {
-        await RadioFavoritesManager.shared.upsertLyricOffset(stationId: stationId, seconds: seconds)
-    }
-}
-
 /// Owns the full lyrics state machine for a radio station:
-/// fetch, LRC parse, synced-line timer, offset nudge, and debounced Supabase persistence.
+/// fetch, LRC parse, and the synced-line timer. The timing is the station's skew (`AlignmentSkewStore`), which
+/// the aligned session already applies to the song position, so this controller keeps no offset of its own.
 /// Callers (StationDetailViewController) become thin delegates that update UI only.
 final class LyricSyncController {
 
@@ -53,10 +32,9 @@ final class LyricSyncController {
     weak var delegate: LyricSyncControllerDelegate?
 
     private(set) var status: LyricStatus = .none
-    private(set) var lyricOffset: TimeInterval = 0
     private(set) var currentSongKey: String?
     /// The aligned occurrence these lyrics were loaded for. Non-nil means Apply (ADR 0005); nil is
-    /// the wall-clock path for Off and Observe.
+    /// the wall-clock path for Off.
     private(set) var currentOccurrenceID: String?
     private(set) var lyricStartDate: Date?
     private(set) var currentEntryAlbum: String?
@@ -67,20 +45,17 @@ final class LyricSyncController {
     private let stationDisplayTitle: String
     /// The lyric fetch both screens use, so station detail and full-screen lyrics get the same lines.
     let loader: LyricLoader
-    private let offsetStore: LyricOffsetStore
     private let clock: () -> Date
     private let scheduleTicks: TickScheduler
     private let positionSource: PositionSource
     private let isApplying: (String) -> Bool
+    private let skew: SkewAdjuster
 
     private var lyricLines: [LyricLine] = []
     private var lyricDuration: TimeInterval?
     private var cancelTicks: (() -> Void)?
     private var lyricFetchTask: Task<Void, Never>?
     private var generation = 0
-    private var correctionSeconds: TimeInterval = 0
-    private var correctionOccurrenceID: String?
-    private var lyricOffsetSaveTask: Task<Void, Never>?
     private var tickObservers: [UUID: () -> Void] = [:]
 
     private static let introGrace = AlignedLyricsPolicy.introGrace
@@ -96,19 +71,19 @@ final class LyricSyncController {
          loader: @escaping LyricLoader = { artist, title, album in
              await LyricsService.shared.fetch(artist: artist, title: title, album: album)
          },
-         offsetStore: LyricOffsetStore = RadioFavoritesLyricOffsetStore(),
          clock: @escaping () -> Date = Date.init,
          scheduleTicks: @escaping TickScheduler = LyricSyncController.oneSecondTicks,
          positionSource: @escaping PositionSource = { AlignedConsumers.lyricPosition(stationId: $0) },
-         isApplying: @escaping (String) -> Bool = { AlignedConsumers.isApplying(stationId: $0) }) {
+         isApplying: @escaping (String) -> Bool = { AlignedConsumers.isApplying(stationId: $0) },
+         skew: SkewAdjuster = .production) {
         self.stationId = stationId
         self.stationDisplayTitle = stationDisplayTitle
         self.loader = loader
-        self.offsetStore = offsetStore
         self.clock = clock
         self.scheduleTicks = scheduleTicks
         self.positionSource = positionSource
         self.isApplying = isApplying
+        self.skew = skew
     }
 
     // MARK: - Public interface
@@ -131,11 +106,8 @@ final class LyricSyncController {
         lyricFetchTask = Task { [weak self] in
             guard let self else { return }
             lyricLog.debug("fetch start: artist='\(entry.artist, privacy: .public)' title='\(entry.title, privacy: .public)'")
-            // Apply never reads the saved offsets (ADR 0005).
-            async let offsetsTask: [String: Int] = occurrenceID == nil ? self.offsetStore.fetchOffsets() : [:]
             let result = await self.loader(entry.artist, entry.title, entry.album)
             lyricLog.debug("fetch done: result=\(result == nil ? "nil" : result!.hasSynced ? "synced(\(result!.lines.count)lines)" : result!.plain != nil ? "plain" : "empty", privacy: .public) cancelled=\(Task.isCancelled)")
-            _ = await offsetsTask
             guard !Task.isCancelled else {
                 lyricLog.debug("task cancelled after fetch — discarding result")
                 return
@@ -161,8 +133,6 @@ final class LyricSyncController {
                         self.startApplyTimer()
                         return
                     }
-                    self.lyricOffset = TimeInterval(self.offsetStore.savedOffset(stationId: self.stationId) ?? 0)
-                    lyricLog.info("restored offset \(self.lyricOffset, format: .fixed(precision: 1))s station=\(self.stationId, privacy: .public)")
                     let elapsed = entry.playedAt.map { self.clock().timeIntervalSince($0) } ?? 0
                     self.lyricStartDate = entry.playedAt ?? self.clock().addingTimeInterval(-elapsed)
                     self.setStatus(.found)
@@ -178,35 +148,20 @@ final class LyricSyncController {
         }
     }
 
+    /// The station's skew, for the full-screen lyrics label.
+    var currentSkew: TimeInterval { skew.current(stationId) }
+
+    /// Moves the song position by `delta` seconds while applying, by moving the station's skew the other way: a larger
+    /// skew means the song started later in the stream, so an earlier position. Returns the new skew. The session takes
+    /// it at once, so the title, the artwork and the lyric line move together. A station that is not applying has no
+    /// skew to move, so the call does nothing and returns the skew unchanged.
     @discardableResult
     func adjustOffset(by delta: TimeInterval) -> TimeInterval {
-        if let occurrenceID = currentOccurrenceID {
-            // Apply: an in-memory correction keyed to the occurrence. Saved offsets are neither
-            // read nor written (ADR 0005).
-            guard correctedPosition() != nil else { return correction }
-            correctionSeconds = correction + delta
-            correctionOccurrenceID = occurrenceID
-            lyricLog.info("lyric correction = \(self.correctionSeconds, format: .fixed(precision: 1))s  song=\(self.currentSongKey ?? "—", privacy: .public)")
-            applyTick()
-            return correction
-        }
-        lyricOffset += delta
-        if let startDate = lyricStartDate {
-            tick(at: clock().timeIntervalSince(startDate) + lyricOffset)
-        }
-        lyricLog.info("lyric offset = \(self.lyricOffset, format: .fixed(precision: 1))s  song=\(self.currentSongKey ?? "—", privacy: .public)")
-
-        guard !stationId.isEmpty else { return lyricOffset }
-        lyricOffsetSaveTask?.cancel()
-        let seconds = Int(lyricOffset)
-        lyricOffsetSaveTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 800_000_000)
-            if Task.isCancelled { return }
-            guard let self else { return }
-            await self.offsetStore.saveOffset(stationId: self.stationId, seconds: seconds)
-            lyricLog.info("saved offset \(seconds)s station=\(self.stationId, privacy: .public)")
-        }
-        return lyricOffset
+        guard currentOccurrenceID != nil, isApplying(stationId) else { return skew.current(stationId) }
+        let value = skew.nudge(stationId, -delta)
+        lyricLog.info("skew = \(value, format: .fixed(precision: 1))s  station=\(self.stationId, privacy: .public)")
+        applyTick()
+        return value
     }
 
     /// Waits for the in-flight fetch to finish. For tests.
@@ -214,20 +169,13 @@ final class LyricSyncController {
         await lyricFetchTask?.value
     }
 
-    /// Apply: the in-memory nudge for the current occurrence, in seconds. Zero in Off and Observe
-    /// (their nudge is `lyricOffset`) and for any other occurrence.
-    var correction: TimeInterval {
-        guard let occurrenceID = currentOccurrenceID, occurrenceID == correctionOccurrenceID else { return 0 }
-        return correctionSeconds
-    }
-
-    /// Apply: the media-clock song position plus the correction, the position every lyric view
-    /// should highlight. Nil when not applying, when the clock gives no valid position, or when the
-    /// position belongs to an occurrence other than the one the lyrics were loaded for.
-    func correctedPosition() -> TimeInterval? {
+    /// Apply: the media-clock song position, the position every lyric view should highlight. Nil when not
+    /// applying, when the clock gives no valid position, or when the position belongs to an occurrence other
+    /// than the one the lyrics were loaded for.
+    func alignedPosition() -> TimeInterval? {
         guard let occurrenceID = currentOccurrenceID, isApplying(stationId),
               let position = positionSource(stationId), position.occurrenceID == occurrenceID else { return nil }
-        return position.seconds + correction
+        return position.seconds
     }
 
     /// Apply: calls `handler` after every tick of this controller's clock, so full-screen lyrics
@@ -256,10 +204,10 @@ final class LyricSyncController {
     }
 
     private func startTimer(initialElapsed: TimeInterval) {
-        tick(at: initialElapsed + lyricOffset)
+        tick(at: initialElapsed)
         cancelTicks = scheduleTicks { [weak self] in
             guard let self, let startDate = self.lyricStartDate else { return }
-            self.tick(at: self.clock().timeIntervalSince(startDate) + self.lyricOffset)
+            self.tick(at: self.clock().timeIntervalSince(startDate))
         }
     }
 
@@ -271,7 +219,7 @@ final class LyricSyncController {
         }
     }
 
-    /// Apply: the line comes from the media clock plus the in-memory correction, never the wall clock.
+    /// Apply: the line comes from the media clock, never the wall clock.
     private func applyTick() {
         // The position source is nil once the session stops applying, so a stopped session falls through to
         // the no-highlight state, like the full-screen view on the same clock.
@@ -282,7 +230,7 @@ final class LyricSyncController {
             showBetweenTracks(writesAlbum: false)
             return
         }
-        tick(at: position.seconds + correction, writesAlbum: false)
+        tick(at: position.seconds, writesAlbum: false)
     }
 
     private func showBetweenTracks(writesAlbum: Bool) {
@@ -314,19 +262,14 @@ final class LyricSyncController {
     private func resetState() {
         generation += 1
         currentOccurrenceID = nil
-        correctionSeconds = 0
-        correctionOccurrenceID = nil
         cancelTicks?()
         cancelTicks = nil
         lyricFetchTask?.cancel()
         lyricFetchTask = nil
-        lyricOffsetSaveTask?.cancel()
-        lyricOffsetSaveTask = nil
         lyricLines = []
         lyricStartDate = nil
         currentSongKey = nil
         lyricDuration = nil
-        lyricOffset = 0
         status = .none
     }
 
@@ -335,4 +278,15 @@ final class LyricSyncController {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .first { !$0.isEmpty }
     }
+}
+
+/// How lyric screens read and move a station's skew. Tests replace it so nothing touches the saved skews.
+struct SkewAdjuster {
+    let current: (String) -> TimeInterval
+    /// Adds the delta and returns the new skew.
+    let nudge: (String, TimeInterval) -> TimeInterval
+
+    static let production = SkewAdjuster(
+        current: { AlignmentSkewStore.shared.skew(for: $0) },
+        nudge: { AlignmentSkewStore.shared.nudge(by: $1, for: $0) })
 }

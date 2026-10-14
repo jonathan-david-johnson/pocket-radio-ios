@@ -11,7 +11,8 @@ final class AlignmentObserveViewModel: ObservableObject {
         let value: String
     }
 
-    private let store: ObserveSwitchStore
+    private let store: AlignmentSwitchStore
+    private let skewStore: AlignmentSkewStore
     private let sessionProvider: @MainActor () -> RadioPlaybackSession?
     private let alignedState: AlignedNowPlayingState
     private let timeZone: TimeZone
@@ -21,11 +22,13 @@ final class AlignmentObserveViewModel: ObservableObject {
     @Published private(set) var monitorRows: [Row] = []
     @Published private(set) var verdictLines: [String] = []
 
-    init(store: ObserveSwitchStore = .shared,
+    init(store: AlignmentSwitchStore = .shared,
+         skewStore: AlignmentSkewStore = .shared,
          sessionProvider: @escaping @MainActor () -> RadioPlaybackSession? = { RadioPlaybackSession.active },
          alignedState: AlignedNowPlayingState = .shared,
          timeZone: TimeZone = .current) {
         self.store = store
+        self.skewStore = skewStore
         self.sessionProvider = sessionProvider
         self.alignedState = alignedState
         self.timeZone = timeZone
@@ -45,22 +48,29 @@ final class AlignmentObserveViewModel: ObservableObject {
         }
     }
 
-    var pollDriver: AlignmentPollDriver {
-        get { store.pollDriver }
-        set { objectWillChange.send(); store.pollDriver = newValue }
+    /// The skew in use for the live session's station, or nil without one.
+    var skew: Double? {
+        sessionProvider().map { skewStore.skew(for: $0.stationId) }
     }
 
-    /// Debug: seconds added to the `+160 s` offset to mimic a feed that runs late or early. Takes effect on the
-    /// running session at its next sample.
-    /// Debug: what the self-healing offset does. Off, Measure (learn and log only) or Apply (move the offset).
-    var selfHeal: SelfHealMode {
-        get { store.selfHeal }
-        set { objectWillChange.send(); store.selfHeal = newValue }
+    /// Debug: sets the live station's skew, to start a heal from a known wrong value. Takes effect at once.
+    func setSkew(_ value: Double) {
+        guard let id = sessionProvider()?.stationId else { return }
+        objectWillChange.send()
+        skewStore.set(value, for: id)
     }
 
-    var feedSkew: Double {
-        get { store.feedSkew }
-        set { objectWillChange.send(); store.feedSkew = newValue }
+    func addToSkew(_ delta: Double) {
+        guard let id = sessionProvider()?.stationId else { return }
+        objectWillChange.send()
+        skewStore.nudge(by: delta, for: id)
+    }
+
+    /// Forgets the saved skew, so the station is back at its seed.
+    func resetSkewToSeed() {
+        guard let id = sessionProvider()?.stationId else { return }
+        objectWillChange.send()
+        skewStore.reset(stationId: id)
     }
 
     func refresh() {
@@ -133,66 +143,47 @@ final class AlignmentObserveViewModel: ObservableObject {
 
 struct AlignmentObserveView: View {
     @StateObject private var model = AlignmentObserveViewModel()
-    @ObservedObject private var heal = SelfHealController.shared
-    @ObservedObject private var anchors = SelfHealController.shared.anchorProbe
+    @ObservedObject private var healer = SkewHealer.shared
+    @ObservedObject private var anchors = SkewHealer.shared.anchorProbe
     @State private var timer: Timer?
 
     var body: some View {
         List {
             Section {
-                Picker("Mode", selection: Binding(get: { model.mode }, set: { model.mode = $0 })) {
+                Picker("Alignment", selection: Binding(get: { model.mode }, set: { model.mode = $0 })) {
                     Text("Off").tag(AlignmentMode.off)
-                    Text("Observe").tag(AlignmentMode.observe)
-                    Text("Apply").tag(AlignmentMode.apply)
+                    Text("On").tag(AlignmentMode.on)
                 }
                 .pickerStyle(.segmented)
-                Picker("Poll driver", selection: Binding(get: { model.pollDriver }, set: { model.pollDriver = $0 })) {
-                    Text("Timer").tag(AlignmentPollDriver.timer)
-                    Text("Playback ticks").tag(AlignmentPollDriver.playbackTicks)
-                }
             } footer: {
-                Text("Takes effect the next time a station starts. Observe and Apply play KCRW's HLS stream. Observe publishes nothing; Apply drives the lock screen and players from the aligned song.")
+                Text("Takes effect the next time a station starts. On plays KCRW's HLS stream and drives the lock screen and players from the aligned song. Off is the old behavior, with no skew and no heal.")
             }
 
             Section {
-                Stepper(value: Binding(get: { model.feedSkew }, set: { model.feedSkew = $0 }),
-                        in: -ObserveSwitchStore.feedSkewLimit...ObserveSwitchStore.feedSkewLimit, step: 0.5) {
-                    Text("Feed skew: \(String(format: "%+.1f", model.feedSkew)) s")
+                if let skew = model.skew {
+                    Text(String(format: "Skew: %.1f s", skew)).font(.subheadline.weight(.semibold))
+                    HStack {
+                        Button("Set 0") { model.setSkew(0) }
+                        Button("−60") { model.addToSkew(-60) }
+                        Button("+60") { model.addToSkew(60) }
+                        Button("Seed") { model.resetSkewToSeed() }
+                    }
+                    .buttonStyle(.bordered)
+                } else {
+                    Text("Start KCRW with alignment On to see its skew.").font(.footnote)
                 }
-                Button("Reset skew") { model.feedSkew = 0 }
-                Text("Adds to the +160 s feed-to-program offset on the running session, to mimic a feed that runs late (positive) or early (negative). Titles and lyrics move with it. Debug only.")
-                    .font(.footnote)
-            } header: {
-                Text("Feed skew (experiment)")
-            }
-
-            Section {
-                Text("Self-heal").font(.subheadline.weight(.semibold))
-                Picker("Self-heal", selection: Binding(get: { model.selfHeal }, set: { model.selfHeal = $0 })) {
-                    Text("Off").tag(SelfHealMode.off)
-                    Text("Measure").tag(SelfHealMode.measure)
-                    Text("Apply").tag(SelfHealMode.apply)
-                }
-                .pickerStyle(.segmented)
-                Text(heal.phase).font(.footnote)
-                Button(anchors.isListening ? "Listening…" : "Anchor now") { Task { await anchors.anchorNow() } }
-                    .disabled(anchors.isListening)
-                Toggle("Auto-anchor every 3 min", isOn: Binding(
-                    get: { anchors.isAuto },
-                    set: { $0 ? anchors.startAuto(every: 180) : anchors.stopAuto() }))
+                Text(healer.lastResult).font(.footnote)
+                Button(anchors.isListening ? "Listening…" : "Heal now") { Task { await healer.heal { _ in } } }
+                    .disabled(healer.isRunning)
                 Text(anchors.status).font(.footnote)
-                if let correction = anchors.learnedCorrection {
-                    Text(String(format: "Learned correction: %+.1f s (n=%d)", correction, anchors.measurements.filter(\.identityMatches).count))
-                        .font(.footnote)
-                }
                 ForEach(Array(anchors.measurements.prefix(8).enumerated()), id: \.offset) { _, m in
-                    Text(String(format: "%@ %+.1f s | offset %.1f | %@", m.identityMatches ? "✓" : "✗", m.delta, m.trueOffset, m.shazam.title))
+                    Text(String(format: "%+.1f s | skew %.1f | %@", m.change, m.skew, m.shazam.title))
                         .font(.footnote)
                 }
             } header: {
-                Text("ShazamKit anchor (experiment)")
+                Text("Skew")
             } footer: {
-                Text("Listens to the speaker with the microphone and compares ShazamKit's song position with the app's. Works only where the mic hears the audio. Self-heal Measure learns and logs only. Apply moves the offset on the running session by the learned correction, after about three anchors.")
+                Text("The skew is the difference between the stream's timeline and the tracklist's. Heal listens to the speaker with ShazamKit, finds the heard song in the tracklist, and sets it from any starting value. The buttons set a wrong skew to test the heal. The lyrics page's + and − fine-tune it by 0.5 s.")
             }
 
             Section("Active session") {

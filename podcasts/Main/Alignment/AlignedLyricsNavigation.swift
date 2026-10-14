@@ -1,16 +1,16 @@
 #if !os(watchOS) && !APPCLIP && !os(tvOS)
 import Foundation
 
-/// The decisions that let station detail and full-screen lyrics read one media clock in Apply
+/// The decisions that let station detail and full-screen lyrics read one media clock
 /// (ADR 0005). All pure; the screens only act on the answers.
 enum AlignedLyricsPolicy {
     /// What station detail's lyric controller should load.
     enum LyricLoad: Equatable {
-        /// Apply: the aligned song and its occurrence.
+        /// The aligned song and its occurrence.
         case aligned(TracklistEntry, occurrenceID: String)
-        /// Off and Observe: the feed's newest row, on the wall clock, as before.
+        /// Off: the feed's newest row, on the wall clock, as before.
         case wallClock(TracklistEntry?)
-        /// Apply with no aligned song or occurrence: no lyrics and no timed highlight.
+        /// Aligned with no song or occurrence: no lyrics and no timed highlight.
         case none
     }
 
@@ -23,9 +23,9 @@ enum AlignedLyricsPolicy {
         return .aligned(aligned, occurrenceID: occurrenceID)
     }
 
-    /// Whether station detail stops its lyrics (timer and correction) when it disappears. In Apply
-    /// it keeps them while full-screen lyrics is pushed on top, so the clock and the correction
-    /// survive. Leaving for real, and any other station, stop as before.
+    /// Whether station detail stops its lyrics (timer) when it disappears. While aligned
+    /// it keeps them while full-screen lyrics is pushed on top, so the clock
+    /// survives. Leaving for real, and any other station, stop as before.
     static func shouldStopOnDisappear(applying: Bool, lyricsScreenOpen: Bool,
                                       isMovingFromParent: Bool, isBeingDismissed: Bool) -> Bool {
         guard applying else { return true }
@@ -61,15 +61,16 @@ enum AlignedLyricsPolicy {
     }
 }
 
-/// What full-screen lyrics reads in Apply instead of a clock of its own: station detail's position,
-/// correction and one-second tick, for one occurrence. Every closure answers for that occurrence only,
+/// What full-screen lyrics reads when aligned instead of a clock of its own: station detail's position,
+/// the station's skew and one-second tick, for one occurrence. Every closure answers for that occurrence only,
 /// so a full screen left open across a song change shows no timed highlight and cannot nudge the new song.
 struct AlignedLyricsClock {
     let occurrenceID: String
-    /// The corrected media-clock position. Nil when there is no valid position.
+    /// The media-clock song position. Nil when there is no valid position.
     let position: () -> TimeInterval?
-    let correction: () -> TimeInterval
-    /// Nudges the shared correction and returns it.
+    /// The station's skew, in seconds.
+    let skew: () -> TimeInterval
+    /// Moves the station's skew by the delta and returns the new skew.
     let adjust: (TimeInterval) -> TimeInterval
     /// Calls the handler after each tick of the shared clock; returns the function that unsubscribes.
     let subscribe: (@escaping () -> Void) -> () -> Void
@@ -81,11 +82,11 @@ extension LyricSyncController {
             occurrenceID: occurrenceID,
             position: { [weak self] in
                 guard let self, self.currentOccurrenceID == occurrenceID else { return nil }
-                return self.correctedPosition()
+                return self.alignedPosition()
             },
-            correction: { [weak self] in
+            skew: { [weak self] in
                 guard let self, self.currentOccurrenceID == occurrenceID else { return 0 }
-                return self.correction
+                return self.currentSkew
             },
             adjust: { [weak self] delta in
                 guard let self, self.currentOccurrenceID == occurrenceID else { return 0 }
