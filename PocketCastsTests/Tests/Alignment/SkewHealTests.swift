@@ -158,6 +158,9 @@ final class SkewProbeTests: XCTestCase {
         XCTAssertEqual(measurement.skew, 160, accuracy: 0.001)
         XCTAssertEqual(measurement.change, 0, accuracy: 0.001)
         XCTAssertTrue(state.lines.first?.contains("skew=160.0 inUse=160.0 change=+0.0") ?? false, "\(state.lines)")
+        // The line also gives the moment the song began in the stream and the feed's stamp, to compare with the stream's own titles.
+        XCTAssertTrue(state.lines.first?.contains("at=2023-11-14T22:16:30.000Z start=2023-11-14T22:16:00.000Z stamp=2023-11-14T22:13:20.000Z") ?? false,
+                      "\(state.lines)")
     }
 
     func test_aSongTheFeedDoesNotListIsReportedAndNotMeasured() async {

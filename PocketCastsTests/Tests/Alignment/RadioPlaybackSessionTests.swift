@@ -386,6 +386,68 @@ final class RadioPlaybackSessionTests: XCTestCase {
         XCTAssertEqual(session.appliedSkew, 0)
     }
 
+    // MARK: - The trace lines
+
+    private func row(_ id: String, _ title: String, stampedAt offset: TimeInterval) -> OccurrenceInput {
+        OccurrenceInput(station: "kexp", providerID: id, kind: "trackplay", title: title, artist: "Artist", album: nil,
+                        artworkURL: nil, playedAt: base.addingTimeInterval(offset))
+    }
+
+    private func feedResult(_ rows: [OccurrenceInput]) -> AlignmentFeedResult {
+        AlignmentFeedResult(entries: rows, statusCode: 200, cacheAgeSeconds: nil, failure: nil)
+    }
+
+    func testTheFirstPollIsTracedWithTheNewestRowsAgeAndLaterNewRowsWithTheirLag() {
+        var wall = base.addingTimeInterval(1000)
+        let session = makeSession(profile: AlignmentProfiles.kexp, wallNow: { wall })
+        session.accept(feedResult([row("2", "Song B", stampedAt: 900), row("1", "Song A", stampedAt: 700)]),
+                       requestedElapsed: 1, receivedElapsed: 2)
+        let first = harness.lines.filter { $0.hasPrefix("[trace] feed") }
+        XCTAssertEqual(first.count, 1)
+        XCTAssertTrue(first[0].contains("first poll rows=2 newest=\"Song B\""), first[0])
+        XCTAssertTrue(first[0].contains("age=100.0"), "the newest row was already 100 s old when the feed first showed it: \(first[0])")
+
+        wall = base.addingTimeInterval(1030)
+        session.accept(feedResult([row("3", "Song C", stampedAt: 940), row("2", "Song B", stampedAt: 900), row("1", "Song A", stampedAt: 700)]),
+                       requestedElapsed: 31, receivedElapsed: 32)
+        let later = harness.lines.filter { $0.hasPrefix("[trace] feed new") }
+        XCTAssertEqual(later.count, 1, "only the new row, not the old ones again: \(later)")
+        XCTAssertTrue(later[0].contains("id=3") && later[0].contains("title=\"Song C\""), later[0])
+        XCTAssertTrue(later[0].contains("lag=90.0"), "listed 90 s after its stamp: \(later[0])")
+        XCTAssertTrue(later[0].contains("stamp=2023-11-14T22:29:00.000Z"), later[0])
+    }
+
+    func testTimedMetadataIsTracedWithItsMediaTimeStreamDateAndWallTime() {
+        let wall = Date(timeIntervalSince1970: 1_700_000_100)
+        let session = makeSession(profile: AlignmentProfiles.kexp, wallNow: { wall })
+        _ = session.programDate(media: 0, advancing: true)   // anchors the media-time clock at the wall time
+        session.trace(metadata: [TraceMetadata(id: "icy/StreamTitle", value: "Artist - \"Song\"\nTwo", start: 12.34),
+                                 TraceMetadata(id: "icy/StreamUrl", value: "Album", start: 12.34)])
+
+        let lines = harness.lines.filter { $0.hasPrefix("[trace] meta") }
+        XCTAssertEqual(lines.count, 2)
+        XCTAssertTrue(lines[0].contains("id=icy/StreamTitle value=\"Artist - 'Song' Two\" applies=12.3"), "quotes and newlines are cleaned: \(lines[0])")
+        XCTAssertTrue(lines[0].contains("program=2023-11-14T22:15:00.000Z"), lines[0])
+        XCTAssertTrue(lines[0].contains("wall=2023-11-14T22:15:00.000Z"), lines[0])
+        XCTAssertTrue(lines[1].contains("value=\"Album\""))
+    }
+
+    func testNothingIsTracedAfterTheSessionStops() {
+        let session = makeSession(profile: AlignmentProfiles.kexp)
+        session.stop()
+        session.trace(metadata: [TraceMetadata(id: "x", value: "y", start: 0)])
+        XCTAssertFalse(harness.lines.contains { $0.hasPrefix("[trace] meta") })
+    }
+
+    func testTheTraceHelpers() {
+        XCTAssertEqual(StreamTrace.iso(Date(timeIntervalSince1970: 1_700_000_000.123)), "2023-11-14T22:13:20.123Z")
+        XCTAssertEqual(StreamTrace.iso(nil), "nil")
+        XCTAssertEqual(StreamTrace.seconds(1.25), "1.2")
+        XCTAssertEqual(StreamTrace.seconds(.nan), "nil")
+        XCTAssertEqual(StreamTrace.clip("a\"b\nc"), "a'b c")
+        XCTAssertEqual(StreamTrace.clip(String(repeating: "x", count: 130)).count, 121)
+    }
+
     func testStartLineHasHostAndPathOnly() {
         _ = makeSession(generation: generation)
 

@@ -61,6 +61,10 @@ final class RadioPlaybackSession {
     /// For a `mediaTime` clock: the wall time at which media position 0 would have been, fixed when playback first
     /// advances. A new play is a new item and takes a new anchor.
     private var mediaAnchor: Date?
+    private var traceDelegate: StreamTraceDelegate?
+    /// Rows already seen in the feed, so a `[trace] feed` line is written once per new row.
+    private var tracedRows: Set<String> = []
+    private var tracedFirstPoll = false
     private var state: SessionState
     private let skew: (String) -> Double
     /// The skew the selection policy currently reflects. Nil until the first sample reads it.
@@ -160,6 +164,11 @@ final class RadioPlaybackSession {
         emit("[align] session start gen=\(AlignmentProbeLog.shortID(generation)) "
             + "endpoint=\(AlignmentProbeLog.safeEndpoint(endpoint))")
         refreshOffsetPolicy()
+        let trace = StreamTraceDelegate { [weak self] items in
+            MainActor.assumeIsolated { self?.trace(metadata: items) }
+        }
+        trace.attach(to: item)
+        traceDelegate = trace
         token = installer(player, Self.tickHandler(for: self))
         statusToken = observer(player, Self.statusHandler(for: self))
         skewObserver = NotificationCenter.default.addObserver(forName: .alignmentSkewDidChange, object: nil, queue: .main) { [weak self] note in
@@ -230,6 +239,8 @@ final class RadioPlaybackSession {
         token = nil
         (statusToken as? NSKeyValueObservation)?.invalidate()
         statusToken = nil
+        traceDelegate?.detach(from: item)
+        traceDelegate = nil
         if let skewObserver { NotificationCenter.default.removeObserver(skewObserver) }
         skewObserver = nil
         onSnapshot = nil
@@ -347,6 +358,49 @@ final class RadioPlaybackSession {
     /// The rows the feed returned, for the heal to match a heard song against.
     var feedRows: [Occurrence] { state.history.occurrences }
 
+    // MARK: - Trace
+
+    /// Writes one `[trace] meta` line per timed metadata item: what the stream said, the media time it applies from, the
+    /// media time and stream date when it arrived, and the wall time. Comparing `program=` with a song's measured start
+    /// shows whether the stream's own titles mark the audio boundary.
+    func trace(metadata items: [TraceMetadata]) {
+        guard !isStopped else { return }
+        let media = item.currentTime().seconds
+        let date: Date?
+        switch profile.clock {
+        case .programDate: date = item.currentDate()
+        case .mediaTime: date = media.isFinite ? mediaAnchor?.addingTimeInterval(media) : nil
+        }
+        for entry in items {
+            emit("[trace] meta id=\(entry.id) value=\"\(StreamTrace.clip(entry.value))\" applies=\(StreamTrace.seconds(entry.start)) "
+                + "media=\(StreamTrace.seconds(media)) program=\(StreamTrace.iso(date)) wall=\(StreamTrace.iso(wallNow()))")
+        }
+    }
+
+    /// Writes `[trace] feed` lines: the first poll's newest row and its age, then each new row with how long after its stamp
+    /// the feed first listed it. That lag is what makes a late feed late (KEXP's was about two minutes).
+    private func trace(feed entries: [OccurrenceInput], received: Date) {
+        func key(_ row: OccurrenceInput) -> String {
+            row.providerID ?? "\(row.title ?? "")|\(row.playedAt?.timeIntervalSince1970 ?? 0)"
+        }
+        let fresh = entries.filter { !tracedRows.contains(key($0)) }
+        fresh.forEach { tracedRows.insert(key($0)) }
+        guard tracedFirstPoll else {
+            tracedFirstPoll = true
+            let newest = entries.compactMap(\.playedAt).max()
+            let top = entries.first { $0.playedAt == newest }
+            emit("[trace] feed first poll rows=\(entries.count) newest=\"\(StreamTrace.clip(top?.title ?? top?.kind ?? "none"))\" "
+                + "stamp=\(StreamTrace.iso(newest)) age=\(StreamTrace.seconds(newest.map { received.timeIntervalSince($0) })) "
+                + "received=\(StreamTrace.iso(received))")
+            return
+        }
+        for row in fresh {
+            emit("[trace] feed new id=\(row.providerID ?? "-") kind=\(row.kind) title=\"\(StreamTrace.clip(row.title ?? ""))\" "
+                + "stamp=\(StreamTrace.iso(row.playedAt)) received=\(StreamTrace.iso(received)) "
+                + "lag=\(StreamTrace.seconds(row.playedAt.map { received.timeIntervalSince($0) }))")
+        }
+    }
+
     /// Status changes, from KVO or from a sample. Drives the stall record and `audioStopped`.
     func statusChanged(_ status: AVPlayer.TimeControlStatus) {
         guard !isStopped, status != lastStatus else { return }
@@ -450,7 +504,9 @@ final class RadioPlaybackSession {
                 latestFeedTop = result.entries.first.map { Self.describe($0) }
             }
             switch update.update {
-            case .accepted: status = "received \(result.entries.count) entries"
+            case .accepted:
+                status = "received \(result.entries.count) entries"
+                trace(feed: result.entries, received: wallNow())
             case .empty: status = "empty response"
             case .failed(let reason): status = reason
             case .ignoredOutOfOrder: status = "out-of-order response ignored"

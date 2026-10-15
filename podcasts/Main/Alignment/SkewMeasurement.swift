@@ -35,6 +35,9 @@ struct SkewMeasurement: Equatable {
     /// Rows that matched the heard song. More than one means the song played twice in the feed's window.
     let matchingRows: Int
 
+    /// When the song began in the stream, on the same clock as the stamps: the program date minus ShazamKit's position.
+    var startedInStream: Date { programDate.addingTimeInterval(-shazam.predictedOffset) }
+
     /// What the anchor asks for: how far the skew in use is from the one it implies. Positive: the stream is later
     /// against the feed than the app assumes, so the screen is ahead of the audio.
     var change: Double { skew - currentSkew }
@@ -43,7 +46,8 @@ struct SkewMeasurement: Equatable {
         let confidence = shazam.confidence.map { String(format: "%.2f", $0) } ?? "n/a"
         return "[anchor] heard=\"\(shazam.title) — \(shazam.artist)\" predicted=\(String(format: "%.1f", shazam.predictedOffset)) "
             + "conf=\(confidence) row=\"\(entry.title)\" rows=\(matchingRows) "
-            + "skew=\(String(format: "%.1f", skew)) inUse=\(String(format: "%.1f", currentSkew)) change=\(String(format: "%+.1f", change))"
+            + "skew=\(String(format: "%.1f", skew)) inUse=\(String(format: "%.1f", currentSkew)) change=\(String(format: "%+.1f", change)) "
+            + "at=\(StreamTrace.iso(programDate)) start=\(StreamTrace.iso(startedInStream)) stamp=\(StreamTrace.iso(entry.playedAt))"
     }
 }
 
