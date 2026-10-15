@@ -72,6 +72,7 @@ final class SkewSolverTests: XCTestCase {
 
     func testOnlyWordsThatChangeTheTimingMakeADifferentVersion() {
         XCTAssertEqual(AnchorIdentity.versionMarkers("Dreams (radio edit - clean)"), ["edit"])
+        XCTAssertEqual(AnchorIdentity.versionMarkers("Song: Their Version"), ["version"], "a version word counts wherever it is")
         XCTAssertEqual(AnchorIdentity.versionMarkers("Song - 2011 Remaster"), [])
         XCTAssertEqual(AnchorIdentity.versionMarkers("Song (Explicit)"), [])
         XCTAssertEqual(AnchorIdentity.versionMarkers("Song (feat. Someone) [Live]"), ["live"])
@@ -79,6 +80,10 @@ final class SkewSolverTests: XCTestCase {
         XCTAssertTrue(AnchorIdentity.sameVersion("A Good Day (Clean)", "A Good Day"))
         XCTAssertTrue(AnchorIdentity.sameVersion("Song (Remastered)", "Song"))
         XCTAssertFalse(AnchorIdentity.sameVersion("Song", "Song (Live)"))
+        // Seen on KEXP (2026-10-14): the feed wrote a colon where ShazamKit wrote brackets, and the heal wrongly skipped it.
+        XCTAssertTrue(AnchorIdentity.sameVersion("TIME IS HAPPENING: MUSTAFA & JULIEN BAKER VERSION",
+                                                 "TIME IS HAPPENING (MUSTAFA & JULIEN BAKER VERSION)"))
+        XCTAssertTrue(AnchorIdentity.sameVersion("Live and Let Die", "Live and Let Die"), "the same word in both titles is not a difference")
         XCTAssertFalse(AnchorIdentity.sameVersion("Song (Album Version)", "Song"))
     }
 
@@ -416,28 +421,49 @@ final class SkewHealerTests: XCTestCase {
         XCTAssertNil(w.store.saved(for: w.stationId).flatMap { $0 == 100 ? nil : $0 }, "nothing else was saved")
     }
 
-    func test_aSongMissingFromTheFeedIsReportedAndTriedAgain() async {
+    func test_aSongMissingFromTheFeedIsWaitedForWithoutUsingUpTheAttempts() async {
         let w = world(start: 0)
         w.unknownSongRate = 1
-        let (healer, _) = make(w)
-        var messages: [String] = []
-        let ok = await healer.heal { messages.append($0) }
-        XCTAssertFalse(ok)
-        XCTAssertTrue(messages.contains("\"Not In The Feed\" isn't in the tracklist yet. Trying again…"), "\(messages)")
-        XCTAssertEqual(w.attempts, SkewHealer.maxAttempts)
-        XCTAssertEqual(w.skew, 0)
-    }
-
-    func test_itWaitsBetweenListensAndNotAfterTheLast() async {
-        let w = world(start: 0)
-        w.unknownSongRate = 1                // every anchor misses, so all 8 attempts run
         var sleeps: [TimeInterval] = []
         let healer = SkewHealer(probe: ShazamAnchorProbe(source: WorldSource { w.outcome() }, context: { w.context() },
                                                          emit: { _ in }, timeout: 10),
                                 store: w.store, session: { (w.generation, w.stationId) }, now: { w.programTime }, emit: { _ in },
+                                sleep: { sleeps.append($0); w.programTime += $0 })
+        var messages: [String] = []
+        let ok = await healer.heal { messages.append($0) }
+        XCTAssertFalse(ok)
+        XCTAssertTrue(messages.contains("\"Not In The Feed\" isn't in the tracklist yet. Waiting for it…"), "\(messages)")
+        XCTAssertEqual(w.attempts, SkewHealer.maxAttempts + SkewHealer.maxFeedWaits, "the waits did not use up the attempts")
+        XCTAssertEqual(sleeps.filter { $0 == SkewHealer.feedGap }.count, SkewHealer.maxFeedWaits)
+        XCTAssertEqual(w.skew, 0)
+    }
+
+    func test_aSongTheFeedListsLaterIsHealedOnceItAppears() async {
+        // KEXP's feed lists a play about two minutes after its stamp, so a song heard soon after it starts is not there yet.
+        let w = SkewWorld(feed: SimulatedFeed(seed: 5, trueSkew: 8, publishDelay: 100), startSkew: 0, seed: 5,
+                          suite: "SkewHealerTests.late")
+        if let song = w.feed.songs.first(where: { $0.stamp > SimulatedFeed.origin + 600 }) {
+            w.programTime = song.stamp + w.feed.trueSkew + 10   // 10 s into a song that is not published yet
+        }
+        let healer = SkewHealer(probe: ShazamAnchorProbe(source: WorldSource { w.outcome() }, context: { w.context() },
+                                                         emit: { _ in }, timeout: 10),
+                                store: w.store, session: { (w.generation, w.stationId) }, now: { w.programTime },
+                                emit: { _ in }, sleep: { w.programTime += $0 })
+        var messages: [String] = []
+        let ok = await healer.heal { messages.append($0) }
+        XCTAssertTrue(messages.contains { $0.contains("isn't in the tracklist yet. Waiting for it") }, "\(messages)")
+        XCTAssertTrue(ok, "\(messages)")
+        XCTAssertEqual(w.skew, 8, accuracy: 1.0)
+    }
+
+    func test_itWaitsBetweenListensAndNotAfterTheLast() async {
+        let w = world(start: 0)
+        var sleeps: [TimeInterval] = []
+        let healer = SkewHealer(probe: ShazamAnchorProbe(source: WorldSource { w.programTime += 7; return .noMatch },
+                                                         context: { w.context() }, emit: { _ in }, timeout: 10),
+                                store: w.store, session: { (w.generation, w.stationId) }, now: { w.programTime }, emit: { _ in },
                                 sleep: { sleeps.append($0) })
         await healer.heal { _ in }
-        XCTAssertEqual(w.attempts, SkewHealer.maxAttempts)
         XCTAssertEqual(sleeps, Array(repeating: SkewHealer.gap, count: SkewHealer.maxAttempts - 1),
                        "ShazamKit rejects a session opened straight after another, so each listen waits")
     }

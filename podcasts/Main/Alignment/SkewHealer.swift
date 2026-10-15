@@ -25,7 +25,7 @@ enum HealMessage {
         value >= 100 ? String(format: "%.0f s", value) : String(format: "%.1f s", value)
     }
 
-    static func notInFeed(_ title: String) -> String { "\"\(title)\" isn't in the tracklist yet. Trying again…" }
+    static func notInFeed(_ title: String) -> String { "\"\(title)\" isn't in the tracklist yet. Waiting for it…" }
     static func differentVersion(_ title: String) -> String { "\"\(title)\" is an edit or remix, so it can't set the timing. Trying again…" }
     static let onlyEditedVersions = "The songs playing are edits or remixes, which can't set the timing. Try again when a regular song plays."
     static let cancelled = "Calibration was cancelled. Try again."
@@ -52,6 +52,10 @@ final class SkewHealer: ObservableObject {
     /// Seconds between one listen and the next. ShazamKit refuses a session opened right after another one closes
     /// (it answers "Missing entitlements" at once), so the heal waits, as the earlier self-healing loop did.
     static let gap: TimeInterval = 5
+    /// A song the feed doesn't list yet is waited for, not retried at once: KEXP's feed publishes a play about two
+    /// minutes after its stamp (seen 2026-10-14). These waits don't use up the attempts, up to `maxFeedWaits` of them.
+    static let feedGap: TimeInterval = 20
+    static let maxFeedWaits = 8
 
     @Published private(set) var lastResult = "Not run"
     @Published private(set) var isRunning = false
@@ -99,6 +103,7 @@ final class SkewHealer: ObservableObject {
         var learner = OffsetLearner(config: Self.learnerConfig)
         var attempts = 0
         var skippedVersions = 0
+        var feedWaits = 0
         var agreed: Double?
         while agreed == nil, attempts < Self.maxAttempts {
             // A cancelled task makes every sleep return at once, so the listens would run back to back and ShazamKit
@@ -110,6 +115,7 @@ final class SkewHealer: ObservableObject {
             }
             attempts += 1
             report(HealMessage.listening(min(learner.anchors.count + 1, HealMessage.anchorsNeeded)))
+            var wait = Self.gap
             let result = await probe.anchorNow()
             guard session()?.generation == started.generation else {
                 finish(HealMessage.sessionChanged, report)
@@ -122,6 +128,11 @@ final class SkewHealer: ObservableObject {
                 agreed = Self.agreedSkew(learner.anchors.map(\.delta))
             case .notInFeed(let title, _):
                 report(HealMessage.notInFeed(title))
+                if feedWaits < Self.maxFeedWaits {
+                    feedWaits += 1
+                    attempts -= 1
+                    wait = Self.feedGap
+                }
             case .differentVersion(let heard, _):
                 skippedVersions += 1
                 report(HealMessage.differentVersion(heard))
@@ -136,7 +147,7 @@ final class SkewHealer: ObservableObject {
                 finish(HealMessage.notRunning, report)
                 return false
             }
-            if agreed == nil, attempts < Self.maxAttempts { await sleep(Self.gap) }
+            if agreed == nil, attempts < Self.maxAttempts { await sleep(wait) }
         }
         guard let skew = agreed else {
             emit("[heal] gave up after \(attempts) tries (\(skippedVersions) different versions)")

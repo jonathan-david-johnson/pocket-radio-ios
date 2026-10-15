@@ -91,15 +91,12 @@ enum AnchorIdentity {
     static let versionWords: Set<String> = ["remix", "mix", "edit", "version", "live", "acoustic", "extended",
                                             "instrumental", "demo", "reprise"]
 
-    /// The version words in a title's brackets or after a dash: "Dreams (radio edit - clean)" gives `edit`. Plain
-    /// words such as "clean" or "remastered" do not change the timing and are ignored.
+    /// The version words in a title: "Dreams (radio edit - clean)" gives `edit`. Plain words such as "clean" or
+    /// "remastered" do not change the timing and are ignored. Any word of the title counts, not only a bracketed one,
+    /// because feeds write the same version as "Song: Their Version" where ShazamKit writes "Song (Their Version)". A
+    /// title that has such a word in its own name (the same word on both sides) still compares equal.
     static func versionMarkers(_ title: String) -> Set<String> {
-        var segments = title.matches(of: /[\(\[]([^\)\]]*)[\)\]]/).map { String($0.output.1) }
-        if let dash = title.range(of: " - ") { segments.append(String(title[dash.upperBound...])) }
-        let words = segments.flatMap {
-            $0.lowercased().split { !$0.isLetter }.map(String.init)
-        }
-        return Set(words).intersection(versionWords)
+        Set(title.lowercased().split { !$0.isLetter }.map(String.init)).intersection(versionWords)
     }
 
     /// Whether two titles name the same recording as far as the version words can tell.

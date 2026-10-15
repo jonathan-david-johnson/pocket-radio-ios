@@ -19,12 +19,14 @@ struct SimulatedFeed {
     let songs: [Song]
     /// The feed lists every title as an edit, "Song 3 (radio edit)", while ShazamKit names the plain recording.
     let listedAsEdit: Bool
+    /// The feed lists a play this many seconds after its stamp (KEXP's takes about two minutes).
+    let publishDelay: Double
     /// The feed shows rows up to this far ahead of what is audible: the feed runs ahead of the stream. A row is
     /// listed once the live station has played it, which is `trueSkew` seconds before the listener hears it.
     static let liveLead = 6.0
 
     /// `repeatEvery`: a song whose title repeats this many songs later. 0 means every title is unique.
-    init(seed: UInt64, trueSkew: Double, count: Int = 60, repeatEvery: Int = 0, listedAsEdit: Bool = false) {
+    init(seed: UInt64, trueSkew: Double, count: Int = 60, repeatEvery: Int = 0, listedAsEdit: Bool = false, publishDelay: Double = 0) {
         var random = SeededRandom(seed: seed)
         var songs: [Song] = []
         var stamp = Self.origin
@@ -37,6 +39,7 @@ struct SimulatedFeed {
         self.trueSkew = trueSkew
         self.songs = songs
         self.listedAsEdit = listedAsEdit
+        self.publishDelay = publishDelay
     }
 
     /// The song audible at program time `p`, and how far into it.
@@ -47,7 +50,7 @@ struct SimulatedFeed {
 
     /// The most recent rows the feed returns while the stream is at program time `p`.
     func rows(at p: Double, limit: Int = 10) -> [SkewCandidate] {
-        songs.filter { $0.stamp <= p + Self.liveLead }.suffix(limit).map {
+        songs.filter { $0.stamp + publishDelay <= p + Self.liveLead }.suffix(limit).map {
             SkewCandidate(title: listedAsEdit ? "\($0.title) (radio edit)" : $0.title, artist: $0.artist,
                           playedAt: Date(timeIntervalSince1970: $0.stamp))
         }
