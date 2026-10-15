@@ -43,7 +43,7 @@ final class AlignmentObserveViewModelTests: XCTestCase {
         let s = RadioPlaybackSession(
             player: AVPlayer(playerItem: item), item: item, endpoint: endpoint,
             now: { [unowned self] in now }, emit: { _ in }, flush: {},
-            fetch: { KCRWFeedResult(entries: [], statusCode: 500, cacheAgeSeconds: nil, failure: "x") },
+            fetch: { AlignmentFeedResult(entries: [], statusCode: 500, cacheAgeSeconds: nil, failure: "x") },
             install: { _, _ in NSObject() }, remove: { _, _ in }, observeStatus: { _, _ in NSObject() },
             skew: { _ in 160 }, startsPoller: false)
         session = s

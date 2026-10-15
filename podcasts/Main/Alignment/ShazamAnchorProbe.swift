@@ -47,7 +47,7 @@ final class ShazamAnchorProbe: ObservableObject {
     func anchorNow() async -> Result {
         guard !isListening else { return .failed("Already listening") }
         guard let before = context() else {
-            status = "Needs alignment On, KCRW playing, and the speaker audible"
+            status = "Needs alignment On, a station playing, and the speaker audible"
             return .notRunning
         }
         isListening = true

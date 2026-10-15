@@ -25,7 +25,7 @@ final class RadioPlaybackSessionTests: XCTestCase {
     }
 
     private final class Gate {
-        var continuation: CheckedContinuation<KCRWFeedResult, Never>?
+        var continuation: CheckedContinuation<AlignmentFeedResult, Never>?
         var started = 0
         var cancelled = false
     }
@@ -50,16 +50,16 @@ final class RadioPlaybackSessionTests: XCTestCase {
         super.tearDown()
     }
 
-    private func failureResult(_ reason: String = "HTTP 500") -> KCRWFeedResult {
-        KCRWFeedResult(entries: [], statusCode: 500, cacheAgeSeconds: nil, failure: reason)
+    private func failureResult(_ reason: String = "HTTP 500") -> AlignmentFeedResult {
+        AlignmentFeedResult(entries: [], statusCode: 500, cacheAgeSeconds: nil, failure: reason)
     }
 
-    private func feed(_ rows: [(title: String, artist: String, playedAt: Date)], age: Double? = nil) -> KCRWFeedResult {
+    private func feed(_ rows: [(title: String, artist: String, playedAt: Date)], age: Double? = nil) -> AlignmentFeedResult {
         let entries = rows.map {
             OccurrenceInput(station: "kcrw", providerID: nil, kind: "trackplay", title: $0.title, artist: $0.artist,
                             album: nil, artworkURL: nil, playedAt: $0.playedAt)
         }
-        return KCRWFeedResult(entries: entries, statusCode: 200, cacheAgeSeconds: age, failure: nil)
+        return AlignmentFeedResult(entries: entries, statusCode: 200, cacheAgeSeconds: age, failure: nil)
     }
 
     private func parkedFetch() -> RadioPlaybackSession.Fetch {
@@ -85,6 +85,8 @@ final class RadioPlaybackSessionTests: XCTestCase {
     }
 
     private func makeSession(startsPoller: Bool = false,
+                             profile: AlignmentProfile = AlignmentProfiles.kcrw,
+                             wallNow: @escaping () -> Date = Date.init,
                              generation: UUID? = nil,
                              item: AVPlayerItem? = nil,
                              fetch: RadioPlaybackSession.Fetch? = nil) -> RadioPlaybackSession {
@@ -94,7 +96,9 @@ final class RadioPlaybackSessionTests: XCTestCase {
             item: item ?? self.item,
             generation: generation ?? UUID(),
             endpoint: endpoint,
+            profile: profile,
             now: { harness.now },
+            wallNow: wallNow,
             emit: { harness.lines.append($0) },
             flush: { harness.flushes += 1 },
             fetch: fetch ?? parkedFetch(),
@@ -323,6 +327,63 @@ final class RadioPlaybackSessionTests: XCTestCase {
         XCTAssertEqual(second.snapshot.historyCount, 0)
         XCTAssertTrue(second.monitorSamples.isEmpty)
         XCTAssertTrue(second.monitorPolls.isEmpty)
+    }
+
+    // MARK: - The media-time clock (a stream with no program date, KEXP)
+
+    func testAMediaTimeClockAnchorsWhenPlaybackFirstAdvancesAndThenFollowsMedia() {
+        let wall = Date(timeIntervalSince1970: 1_700_000_100)
+        let session = makeSession(profile: AlignmentProfiles.kexp, wallNow: { wall })
+
+        XCTAssertNil(session.programDate(media: 0, advancing: false), "no date before playback advances")
+        XCTAssertNil(session.programDate(media: nil, advancing: true))
+        XCTAssertNil(session.programDate(media: .nan, advancing: true))
+
+        // Playback first advances at media 5 s, which is wall time `wall`: position 0 was 5 s earlier.
+        XCTAssertEqual(session.programDate(media: 5, advancing: true), wall)
+        XCTAssertEqual(session.programDate(media: 65, advancing: true), wall.addingTimeInterval(60),
+                       "the date follows media time, whatever the wall clock says")
+    }
+
+    func testAMediaTimeClockStopsWithAStallSoTheSkewDoesNotMove() {
+        var wall = Date(timeIntervalSince1970: 1_700_000_100)
+        let session = makeSession(profile: AlignmentProfiles.kexp, wallNow: { wall })
+        XCTAssertEqual(session.programDate(media: 10, advancing: true), wall)
+        // A 40 s stall: the wall clock moves, media time does not.
+        wall = wall.addingTimeInterval(40)
+        XCTAssertEqual(session.programDate(media: 10, advancing: false), Date(timeIntervalSince1970: 1_700_000_100),
+                       "the date is where the audio is, not where the wall clock is")
+        XCTAssertEqual(session.programDate(media: 11, advancing: true), Date(timeIntervalSince1970: 1_700_000_101))
+    }
+
+    func testEachSessionOfAMediaTimeStreamHasItsOwnAnchor() {
+        let first = makeSession(profile: AlignmentProfiles.kexp, wallNow: { Date(timeIntervalSince1970: 1_700_000_000) })
+        let second = makeSession(profile: AlignmentProfiles.kexp, wallNow: { Date(timeIntervalSince1970: 1_700_000_500) })
+        XCTAssertEqual(first.programDate(media: 3, advancing: true), Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertEqual(second.programDate(media: 3, advancing: true), Date(timeIntervalSince1970: 1_700_000_500),
+                       "a restart is a new item, so it takes a new anchor and needs a new heal")
+    }
+
+    func testAProgramDateStreamReadsTheItemsOwnDate() {
+        let session = makeSession(profile: AlignmentProfiles.kcrw, wallNow: { Date(timeIntervalSince1970: 1) })
+        XCTAssertNil(session.programDate(media: 5, advancing: true), "an item with no program date has none, and the wall clock is not used")
+    }
+
+    func testAKEXPSessionSelectsTheSongFromTheMediaTimeClockAndTheSkew() throws {
+        harness.skew = 0
+        let wall = Date(timeIntervalSince1970: 1_700_000_300)
+        let session = makeSession(profile: AlignmentProfiles.kexp, wallNow: { wall })
+        // The feed stamps a song 100 s before the wall time of the first sample.
+        let row = OccurrenceInput(station: "kexp", providerID: "1", kind: "trackplay", title: "Song A", artist: "Artist A",
+                                  album: nil, artworkURL: nil, playedAt: base.addingTimeInterval(200))
+        session.accept(AlignmentFeedResult(entries: [row], statusCode: 200, cacheAgeSeconds: nil, failure: nil),
+                       requestedElapsed: 1, receivedElapsed: 2)
+        let date = try XCTUnwrap(session.programDate(media: 20, advancing: true))
+        tick(session, elapsed: 10, media: 20, program: date)
+
+        XCTAssertEqual(session.snapshot.candidate, "Song A — Artist A")
+        XCTAssertEqual(session.snapshot.songSeconds ?? -1, 100, accuracy: 0.001, "skew 0: the song began where the feed stamped it")
+        XCTAssertEqual(session.appliedSkew, 0)
     }
 
     func testStartLineHasHostAndPathOnly() {

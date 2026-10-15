@@ -131,13 +131,15 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
         player = AVPlayer(playerItem: playerItem)
 
         #if !os(watchOS) && !APPCLIP && !os(tvOS)
-        // Debug alignment On: play the measured endpoint and let the aligned session drive titles.
-        let alignmentMode = AlignmentSwitchStore.shared.mode
-        if KCRWAlignmentConfiguration.endpointOverride(for: episode, mode: alignmentMode) != nil,
+        // Debug alignment On: an eligible station (KCRW, KEXP) gets an aligned session. KCRW also plays its measured
+        // HLS endpoint, which PlaybackItem chose when it built this item.
+        if let profile = AlignmentProfiles.profile(for: episode, mode: AlignmentSwitchStore.shared.mode),
            let player {
-            alignmentSession = RadioPlaybackSession.startOnMain(player: player, item: playerItem,
-                                                                endpoint: KCRWAlignmentConfiguration.measuredEndpoint,
-                                                                stationId: episode.uuid)
+            let endpoint = profile.streamOverride ?? (playerItem.asset as? AVURLAsset)?.url
+            if let endpoint {
+                alignmentSession = RadioPlaybackSession.startOnMain(player: player, item: playerItem, endpoint: endpoint,
+                                                                    stationId: episode.uuid, profile: profile)
+            }
         }
 
         // With an aligned session that session is the single writer, so ICY titles are not observed.

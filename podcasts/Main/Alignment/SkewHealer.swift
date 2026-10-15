@@ -29,7 +29,7 @@ enum HealMessage {
     static func differentVersion(_ title: String) -> String { "\"\(title)\" is an edit or remix, so it can't set the timing. Trying again…" }
     static let onlyEditedVersions = "The songs playing are edits or remixes, which can't set the timing. Try again when a regular song plays."
     static let cancelled = "Calibration was cancelled. Try again."
-    static let notRunning = "Start KCRW with alignment On first"
+    static let notRunning = "Start a station with alignment On first"
     static let sessionChanged = "The station changed. Try again."
     static let gaveUp = "Couldn't calibrate. Check the speaker is audible and try again."
     static let outOfRange = "The result was out of range, so nothing changed. Try again."

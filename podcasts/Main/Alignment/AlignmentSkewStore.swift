@@ -11,10 +11,11 @@ extension Notification.Name {
 /// song position behind the lyrics, the lock screen and the widget all read it, so one change moves them together.
 ///
 /// A heal replaces it. The `+` and `−` on the lyrics page add or subtract `nudgeStep`. It is saved per station on
-/// this device, because it depends on this device and its speaker. A station never saved starts at its seed, which
-/// is 0 unless the station is known.
+/// this device, because it depends on this device and its speaker. Every list entry for one aligned stream shares one
+/// skew (see `AlignmentProfile.key`). A stream never saved starts at its seed, which is 0 unless the stream is known.
 final class AlignmentSkewStore {
-    static let shared = AlignmentSkewStore(defaults: runtimeDefaults(), seed: AlignmentSkewStore.productionSeed)
+    static let shared = AlignmentSkewStore(defaults: runtimeDefaults(), seed: AlignmentSkewStore.productionSeed,
+                                           key: AlignmentSkewStore.productionKey)
 
     static let stationIdKey = "stationId"
     static let keyPrefix = "PocketRadio.alignment.skew."
@@ -32,32 +33,41 @@ final class AlignmentSkewStore {
         return suite
     }
 
-    /// Only KCRW is known today, so it is the only station with a seed. Any other station starts at 0.
-    static func productionSeed(_ stationId: String) -> Double {
-        guard let station = RadioStationRegistry.shared.station(for: stationId),
-              KCRWAlignmentConfiguration.isEligible(name: station.title, streamURL: station.streamUrl) else { return 0 }
-        return KCRWAlignmentConfiguration.seedSkew
+    /// A station that belongs to an aligned stream saves its skew under that stream's key, so the MP3, AAC and HLS
+    /// list entries for one KCRW stream share a skew. Any other station is keyed by its own id.
+    static func productionKey(_ stationId: String) -> String {
+        AlignmentProfiles.profile(forStationId: stationId)?.key ?? stationId
+    }
+
+    /// The seed for a key: the profile's, or 0 for a stream the app does not know.
+    static func productionSeed(_ key: String) -> Double {
+        AlignmentProfiles.all.first { $0.key == key }?.seedSkew ?? 0
     }
 
     private let defaults: UserDefaults
     private let seed: (String) -> Double
+    private let keyFor: (String) -> String
     private let center: NotificationCenter
 
-    init(defaults: UserDefaults, seed: @escaping (String) -> Double, center: NotificationCenter = .default) {
+    /// `seed` and the notification's station id work on the key this station's `key` closure returns.
+    init(defaults: UserDefaults, seed: @escaping (String) -> Double, key: @escaping (String) -> String = { $0 },
+         center: NotificationCenter = .default) {
         self.defaults = defaults
         self.seed = seed
+        self.keyFor = key
         self.center = center
     }
 
     /// The saved skew, or the station's seed when none was saved.
     func skew(for stationId: String) -> Double {
-        saved(for: stationId) ?? seed(stationId)
+        saved(for: stationId) ?? seed(keyFor(stationId))
     }
 
     /// The saved skew, nil for a station never healed or nudged.
     func saved(for stationId: String) -> Double? {
-        guard defaults.object(forKey: Self.key(stationId)) != nil else { return nil }
-        let value = defaults.double(forKey: Self.key(stationId))
+        let name = defaultsName(stationId)
+        guard defaults.object(forKey: name) != nil else { return nil }
+        let value = defaults.double(forKey: name)
         return value.isFinite ? value : nil
     }
 
@@ -65,7 +75,7 @@ final class AlignmentSkewStore {
     @discardableResult
     func set(_ value: Double, for stationId: String) -> Bool {
         guard !stationId.isEmpty, value.isFinite, abs(value) <= Self.limit else { return false }
-        defaults.set((value * 10).rounded() / 10, forKey: Self.key(stationId))
+        defaults.set((value * 10).rounded() / 10, forKey: defaultsName(stationId))
         post(stationId)
         return true
     }
@@ -79,11 +89,11 @@ final class AlignmentSkewStore {
 
     /// Forgets the saved skew, so the station is back at its seed.
     func reset(stationId: String) {
-        defaults.removeObject(forKey: Self.key(stationId))
+        defaults.removeObject(forKey: defaultsName(stationId))
         post(stationId)
     }
 
-    private static func key(_ stationId: String) -> String { keyPrefix + stationId }
+    private func defaultsName(_ stationId: String) -> String { Self.keyPrefix + keyFor(stationId) }
 
     private func post(_ stationId: String) {
         center.post(name: .alignmentSkewDidChange, object: self, userInfo: [Self.stationIdKey: stationId])

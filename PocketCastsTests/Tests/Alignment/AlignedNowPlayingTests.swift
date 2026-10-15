@@ -50,12 +50,12 @@ final class AlignedNowPlayingTests: XCTestCase {
         (title, artist, album, art, "trackplay", at)
     }
 
-    private func feed(_ rows: [Row]) -> KCRWFeedResult {
+    private func feed(_ rows: [Row]) -> AlignmentFeedResult {
         let entries = rows.map {
             OccurrenceInput(station: "kcrw", providerID: nil, kind: $0.kind, title: $0.title, artist: $0.artist,
                             album: $0.album, artworkURL: $0.art, playedAt: $0.playedAt)
         }
-        return KCRWFeedResult(entries: entries, statusCode: 200, cacheAgeSeconds: nil, failure: nil)
+        return AlignmentFeedResult(entries: entries, statusCode: 200, cacheAgeSeconds: nil, failure: nil)
     }
 
     private func makeSession(stationId: String? = nil,
@@ -69,7 +69,7 @@ final class AlignedNowPlayingTests: XCTestCase {
             now: { harness.now },
             emit: { harness.lines.append($0) },
             flush: {},
-            fetch: { KCRWFeedResult(entries: [], statusCode: 500, cacheAgeSeconds: nil, failure: "parked") },
+            fetch: { AlignmentFeedResult(entries: [], statusCode: 500, cacheAgeSeconds: nil, failure: "parked") },
             install: { _, _ in NSObject() },
             remove: { _, _ in },
             observeStatus: { _, _ in NSObject() },

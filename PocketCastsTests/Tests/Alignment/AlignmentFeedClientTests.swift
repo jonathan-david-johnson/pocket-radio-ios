@@ -3,13 +3,13 @@ import XCTest
 
 @testable import podcasts
 
-final class KCRWFeedClientTests: XCTestCase {
+final class AlignmentFeedClientTests: XCTestCase {
     private struct Boom: Error, CustomStringConvertible {
         var description: String { "https://tracklist-api.kcrw.com/secret failed" }
     }
 
     private func response(_ code: Int, headers: [String: String] = [:]) -> URLResponse {
-        HTTPURLResponse(url: KCRWFeedClient.feedURL, statusCode: code, httpVersion: nil, headerFields: headers)!
+        HTTPURLResponse(url: AlignmentFeedClient.kcrwURL, statusCode: code, httpVersion: nil, headerFields: headers)!
     }
 
     private func rows(_ count: Int) -> Data {
@@ -17,11 +17,11 @@ final class KCRWFeedClientTests: XCTestCase {
         return Data("[\(body)]".utf8)
     }
 
-    private func fetch(_ data: Data, _ response: URLResponse) async -> KCRWFeedResult {
-        await KCRWFeedClient(fetchData: { _ in (data, response) }).fetch()
+    private func fetch(_ data: Data, _ response: URLResponse) async -> AlignmentFeedResult {
+        await AlignmentFeedClient(fetchData: { _ in (data, response) }).fetch()
     }
 
-    private func assertNoURL(_ result: KCRWFeedResult, file: StaticString = #filePath, line: UInt = #line) {
+    private func assertNoURL(_ result: AlignmentFeedResult, file: StaticString = #filePath, line: UInt = #line) {
         let text = result.failure ?? ""
         XCTAssertFalse(text.contains("http") || text.contains("kcrw") || text.contains("secret"), file: file, line: line)
     }
@@ -49,7 +49,7 @@ final class KCRWFeedClientTests: XCTestCase {
     }
 
     func testNonHTTPResponseFailure() async {
-        let result = await fetch(Data(), URLResponse(url: KCRWFeedClient.feedURL, mimeType: nil,
+        let result = await fetch(Data(), URLResponse(url: AlignmentFeedClient.kcrwURL, mimeType: nil,
                                                       expectedContentLength: 0, textEncodingName: nil))
         XCTAssertEqual(result.failure, "non-HTTP response")
         XCTAssertNil(result.statusCode)
@@ -75,19 +75,19 @@ final class KCRWFeedClientTests: XCTestCase {
     }
 
     func testTransportErrorHasNoURL() async {
-        let result = await KCRWFeedClient(fetchData: { _ in throw Boom() }).fetch()
+        let result = await AlignmentFeedClient(fetchData: { _ in throw Boom() }).fetch()
         XCTAssertEqual(result.failure, "feed request or decode failed")
         assertNoURL(result)
     }
 
     func testRequestSetup() async {
         var captured: URLRequest?
-        let client = KCRWFeedClient(fetchData: { request in
+        let client = AlignmentFeedClient(fetchData: { request in
             captured = request
             return (Data("[]".utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         })
         _ = await client.fetch()
-        XCTAssertEqual(captured?.url, KCRWFeedClient.feedURL)
+        XCTAssertEqual(captured?.url, AlignmentFeedClient.kcrwURL)
         XCTAssertEqual(captured?.timeoutInterval, 12)
         XCTAssertEqual(captured?.httpShouldHandleCookies, false)
     }

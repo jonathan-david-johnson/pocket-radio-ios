@@ -156,7 +156,7 @@ struct AlignmentObserveView: View {
                 }
                 .pickerStyle(.segmented)
             } footer: {
-                Text("Takes effect the next time a station starts. On plays KCRW's HLS stream and drives the lock screen and players from the aligned song. Off is the old behavior, with no skew and no heal.")
+                Text("Takes effect the next time a station starts. On aligns KCRW (it plays its HLS stream) and KEXP, and drives the lock screen and players from the aligned song. Off is the old behavior, with no skew and no heal.")
             }
 
             Section {
@@ -170,7 +170,7 @@ struct AlignmentObserveView: View {
                     }
                     .buttonStyle(.bordered)
                 } else {
-                    Text("Start KCRW with alignment On to see its skew.").font(.footnote)
+                    Text("Start KCRW or KEXP with alignment On to see its skew.").font(.footnote)
                 }
                 Text(healer.lastResult).font(.footnote)
                 Button(anchors.isListening ? "Listening…" : "Heal now") { Task { await healer.heal { _ in } } }
@@ -209,7 +209,7 @@ struct AlignmentObserveView: View {
                 Button("Flush log to file") { FileLog.shared.forceFlush() }
             }
         }
-        .navigationTitle("KCRW alignment")
+        .navigationTitle("Station alignment")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             model.refresh()

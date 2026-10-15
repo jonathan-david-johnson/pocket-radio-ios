@@ -4,7 +4,7 @@ import Foundation
 import PocketCastsUtils
 import StreamSession
 
-/// Owner of one `AVPlayerItem` for KCRW alignment. It samples the player once a second, keeps the
+/// Owner of one `AVPlayerItem` for an aligned station (KCRW or KEXP; see `AlignmentProfile`). It samples the player once a second, keeps the
 /// StreamSession core, runs one feed poller, records the monitor data, and writes `[align]` log
 /// lines. It registers the station with `AlignedNowPlayingState` and hands every snapshot to
 /// `AlignedNowPlayingPublisher`, the only path to the lock screen and players. It never writes Now
@@ -18,7 +18,7 @@ final class RadioPlaybackSession {
     typealias Install = (AVPlayer, @escaping (CMTime) -> Void) -> Any
     typealias Remove = (AVPlayer, Any) -> Void
     typealias ObserveStatus = (AVPlayer, @escaping (AVPlayer.TimeControlStatus) -> Void) -> Any?
-    typealias Fetch = @MainActor () async -> KCRWFeedResult
+    typealias Fetch = @MainActor () async -> AlignmentFeedResult
 
     static let maxStoredSamples = 21_600
     static let pollInterval: TimeInterval = 30
@@ -31,6 +31,8 @@ final class RadioPlaybackSession {
     let item: AVPlayerItem
     let endpoint: URL
     let stationId: String
+    /// How this station is aligned: its clock, its feed and where its skew starts.
+    let profile: AlignmentProfile
     /// Readout callback. Cleared on stop.
     var onSnapshot: ((RadioAlignmentSnapshot) -> Void)?
 
@@ -50,14 +52,16 @@ final class RadioPlaybackSession {
     private let emit: (String) -> Void
     private let flush: () -> Void
     private let fetch: Fetch
-    private let feedClient: KCRWFeedClient?
+    private let feedClient: AlignmentFeed?
     private let remove: Remove
     private let alignedState: AlignedNowPlayingState
     private let publisher: AlignedNowPlayingPublisher?
     private let startedAt: TimeInterval
-    private var state = SessionState(historyPolicy: KCRWAlignmentConfiguration.historyPolicy,
-                                     selectionPolicy: KCRWAlignmentConfiguration.selectionPolicy,
-                                     clockPolicy: KCRWAlignmentConfiguration.clockPolicy)
+    private let wallNow: () -> Date
+    /// For a `mediaTime` clock: the wall time at which media position 0 would have been, fixed when playback first
+    /// advances. A new play is a new item and takes a new anchor.
+    private var mediaAnchor: Date?
+    private var state: SessionState
     private let skew: (String) -> Double
     /// The skew the selection policy currently reflects. Nil until the first sample reads it.
     private(set) var appliedSkew: Double?
@@ -85,9 +89,11 @@ final class RadioPlaybackSession {
          generation: UUID = UUID(),
          endpoint: URL,
          stationId: String = "",
+         profile: AlignmentProfile = AlignmentProfiles.kcrw,
          alignedState: AlignedNowPlayingState = .shared,
          post: AlignedNowPlayingPublisher.Post? = nil,
          now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         wallNow: @escaping () -> Date = Date.init,
          emit: @escaping (String) -> Void = { FileLog.shared.addMessage($0) },
          flush: @escaping () -> Void = { FileLog.shared.forceFlush() },
          fetch: Fetch? = nil,
@@ -101,6 +107,11 @@ final class RadioPlaybackSession {
         self.generation = generation
         self.endpoint = endpoint
         self.stationId = stationId
+        self.profile = profile
+        self.wallNow = wallNow
+        state = SessionState(historyPolicy: profile.historyPolicy,
+                             selectionPolicy: profile.selectionPolicy,
+                             clockPolicy: profile.clockPolicy)
         self.alignedState = alignedState
         if let post {
             publisher = AlignedNowPlayingPublisher(stationId: stationId, generation: generation,
@@ -116,7 +127,7 @@ final class RadioPlaybackSession {
             self.fetch = fetch
             feedClient = nil
         } else {
-            let client = KCRWFeedClient()
+            let client = profile.makeFeed()
             self.fetch = { await client.fetch() }
             feedClient = client
         }
@@ -163,13 +174,13 @@ final class RadioPlaybackSession {
     /// `DefaultPlayer` is not main-actor isolated. Creation happens on the main thread in
     /// practice; off main it logs and does nothing rather than crash.
     nonisolated static func startOnMain(player: AVPlayer, item: AVPlayerItem, endpoint: URL,
-                                        stationId: String) -> RadioPlaybackSession? {
+                                        stationId: String, profile: AlignmentProfile) -> RadioPlaybackSession? {
         guard Thread.isMainThread else {
             FileLog.shared.addMessage("[align] session not started: not on the main thread")
             return nil
         }
         return MainActor.assumeIsolated {
-            RadioPlaybackSession(player: player, item: item, endpoint: endpoint, stationId: stationId)
+            RadioPlaybackSession(player: player, item: item, endpoint: endpoint, stationId: stationId, profile: profile)
         }
     }
 
@@ -239,11 +250,12 @@ final class RadioPlaybackSession {
     private func tick() {
         guard !isStopped, let player, player.currentItem === item else { return }
         tickCount += 1
+        let media = item.currentTime().seconds
         sample(currentItem: player.currentItem,
                rate: player.rate,
                status: player.timeControlStatus,
-               mediaSeconds: item.currentTime().seconds,
-               programDate: item.currentDate())
+               mediaSeconds: media,
+               programDate: programDate(media: media, advancing: player.rate > 0 && player.timeControlStatus == .playing))
     }
 
     /// One paired player observation. Only this path can change the candidate.
@@ -285,7 +297,7 @@ final class RadioPlaybackSession {
         guard skew != appliedSkew else { return }
         let first = appliedSkew == nil
         appliedSkew = skew
-        let frozen = KCRWAlignmentConfiguration.selectionPolicy
+        let frozen = profile.selectionPolicy
         state.updateSelectionPolicy(OccurrenceSelectionPolicy(feedToProgramOffset: skew,
                                                               maxSelectedAge: frozen.maxSelectedAge,
                                                               maxFeedSilence: frozen.maxFeedSilence))
@@ -299,10 +311,37 @@ final class RadioPlaybackSession {
         tick()
     }
 
-    /// The stream's program date now, read from the player's own clock. Nil while it has none.
+    /// The program date for a media position, on this profile's clock.
+    ///
+    /// `programDate`: the player's own date for the item, as HLS carries it.
+    ///
+    /// `mediaTime`: a stream with no program date. The date is the wall time at which media position 0 would have
+    /// been, fixed when playback first advances, plus the media position. Media time stops during a stall, so the
+    /// clock follows the audio and a stall does not move the skew. Nil until playback first advances.
+    func programDate(media: Double?, advancing: Bool) -> Date? {
+        switch profile.clock {
+        case .programDate:
+            return item.currentDate()
+        case .mediaTime:
+            guard let media, media.isFinite else { return nil }
+            if mediaAnchor == nil {
+                guard advancing else { return nil }
+                mediaAnchor = wallNow().addingTimeInterval(-media)
+            }
+            return mediaAnchor?.addingTimeInterval(media)
+        }
+    }
+
+    /// The stream's program date now, on this profile's clock. Nil while it has none.
     func currentProgramDate() -> Date? {
         guard !isStopped, player?.currentItem === item else { return nil }
-        return item.currentDate()
+        switch profile.clock {
+        case .programDate: return item.currentDate()
+        case .mediaTime:
+            let media = item.currentTime().seconds
+            guard mediaAnchor != nil, media.isFinite else { return nil }
+            return programDate(media: media, advancing: true)
+        }
     }
 
     /// The rows the feed returned, for the heal to match a heard song against.
@@ -391,7 +430,7 @@ final class RadioPlaybackSession {
     /// Receiving rows changes the available evidence, not the player's position. Only the next
     /// paired player sample may change the candidate, so the candidate, reason and player
     /// fields are carried over unchanged.
-    func accept(_ result: KCRWFeedResult, requestedElapsed: TimeInterval, receivedElapsed: TimeInterval) {
+    func accept(_ result: AlignmentFeedResult, requestedElapsed: TimeInterval, receivedElapsed: TimeInterval) {
         guard !isStopped else { return }
         requestID += 1
         lastPollElapsed = requestedElapsed
@@ -470,7 +509,7 @@ final class RadioPlaybackSession {
         }
     }
 
-    private func pollFinished(_ result: KCRWFeedResult, number: Int, index: Int, requested: TimeInterval) {
+    private func pollFinished(_ result: AlignmentFeedResult, number: Int, index: Int, requested: TimeInterval) {
         pollInFlight = false
         guard !isStopped, !Task.isCancelled else { return }
         monitorPolls[index] = AlignmentMonitorPoll(elapsed: requested, succeeded: result.failure == nil)
