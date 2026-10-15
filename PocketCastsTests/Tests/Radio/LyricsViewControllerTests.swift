@@ -39,6 +39,16 @@ final class LyricsViewControllerTests: XCTestCase {
         }
     }
 
+    private final class Delegate: LyricsViewControllerDelegate {
+        var calls: [TimeInterval] = []
+        var offset: TimeInterval = 0
+        func lyricsViewController(_ viewController: LyricsViewController, adjustLyricOffsetBy delta: TimeInterval) -> TimeInterval {
+            calls.append(delta)
+            offset += delta
+            return offset
+        }
+    }
+
     private func lines(_ stamps: [TimeInterval] = [0, 5, 12]) -> LyricsResult {
         LyricsResult(lines: stamps.enumerated().map { LyricLine(timestamp: $1, text: "Line \($0)") }, plain: nil, duration: 100)
     }
@@ -179,11 +189,26 @@ final class LyricsViewControllerTests: XCTestCase {
         XCTAssertTrue(vc._offsetControlsHiddenForTesting)
     }
 
-    func testWithoutAClockThereIsNothingToNudge() async {
+    func testWithoutAClockTheNudgeIsTheSavedLyricOffsetInWholeSeconds() async {
         let vc = await makeScreen(clock: nil, isCurrentSong: true, offset: 4)
-        XCTAssertTrue(vc._offsetControlsHiddenForTesting, "Off has no skew, so no + and −")
+        let delegate = Delegate()
+        vc.delegate = delegate
+        XCTAssertFalse(vc._offsetControlsHiddenForTesting, "a station that is not aligned keeps its + and −")
+        XCTAssertEqual(vc._offsetLabelForTesting, "+0s")
+
         vc._nudgeForTesting(0.5)
-        XCTAssertNil(vc._offsetLabelForTesting.flatMap { $0.isEmpty ? nil : $0 })
+        XCTAssertEqual(delegate.calls, [1], "a whole second, because the saved offset is whole seconds")
+        XCTAssertEqual(vc._offsetLabelForTesting, "+1s")
+
+        vc._nudgeForTesting(-0.5)
+        vc._nudgeForTesting(-0.5)
+        XCTAssertEqual(vc._offsetLabelForTesting, "-1s")
+    }
+
+    func testWithoutAClockOrADelegateTheNudgeKeepsTheLocalCopy() async {
+        let vc = await makeScreen(clock: nil, isCurrentSong: true, offset: 4)
+        vc._nudgeForTesting(1)
+        XCTAssertEqual(vc._offsetLabelForTesting, "+1s")
     }
 }
 #endif

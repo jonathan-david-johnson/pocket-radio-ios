@@ -729,10 +729,20 @@ extension StationDetailViewController: UITableViewDelegate {
         let elapsed = isCurrentSong && !applying ? (lyricSync.lyricStartDate.map { Date().timeIntervalSince($0) } ?? 0) : 0
 
         let vc = LyricsViewController(entry: entry, stationName: station.displayableTitle(), offset: elapsed, isCurrentSong: isCurrentSong)
+        vc.lyricOffset = lyricSync.lyricOffset
         vc.alignedClock = clock
+        vc.delegate = self
         vc.lyricLoader = lyricSync.loader
         openLyricsScreen = vc
         navigationController?.pushViewController(vc, animated: true)
+    }
+}
+
+// MARK: - LyricsViewControllerDelegate
+
+extension StationDetailViewController: LyricsViewControllerDelegate {
+    func lyricsViewController(_ viewController: LyricsViewController, adjustLyricOffsetBy delta: TimeInterval) -> TimeInterval {
+        lyricSync.adjustOffset(by: delta)
     }
 }
 

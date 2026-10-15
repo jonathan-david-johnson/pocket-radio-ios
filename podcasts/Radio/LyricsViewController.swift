@@ -1,5 +1,11 @@
 import UIKit
 
+protocol LyricsViewControllerDelegate: AnyObject {
+    /// Adjust the station's live lyric offset by `delta` seconds and return the new offset. Used when there is no
+    /// aligned clock, where the nudge is the saved per-station lyric offset.
+    func lyricsViewController(_ viewController: LyricsViewController, adjustLyricOffsetBy delta: TimeInterval) -> TimeInterval
+}
+
 /// Full-screen lyrics view for a single tracklist entry. Navigates immediately
 /// and fetches lyrics async (cache hit = instant for current song).
 final class LyricsViewController: UIViewController {
@@ -7,6 +13,11 @@ final class LyricsViewController: UIViewController {
     private let stationName: String
     private let initialOffset: TimeInterval
     private let isCurrentSong: Bool
+
+    weak var delegate: LyricsViewControllerDelegate?
+
+    /// Live sync offset copied from the station detail, for a station that is not aligned. Updated when the user taps +/-.
+    var lyricOffset: TimeInterval = 0
 
     /// Apply: station detail's clock for the current song. When set, this screen has no timer,
     /// no `Date()` and no `initialOffset` of its own (ADR 0005).
@@ -279,9 +290,12 @@ final class LyricsViewController: UIViewController {
     }
 
     private func updateOffsetLabel() {
-        // The station's skew, read from the shared store, not a local copy.
-        guard let skew = alignedClock?.skew() else { return }
-        offsetLabel.text = String(format: "Skew %.1f s", skew)
+        if let skew = alignedClock?.skew() {
+            // Aligned: the station's skew, read from the shared store, not a local copy.
+            offsetLabel.text = String(format: "Skew %.1f s", skew)
+        } else {
+            offsetLabel.text = "\(lyricOffset >= 0 ? "+" : "")\(Int(lyricOffset))s"
+        }
     }
 
     private func updateStatusLabel() {
@@ -295,11 +309,21 @@ final class LyricsViewController: UIViewController {
     }
 
     private func adjustOffset(by delta: TimeInterval) {
-        // The nudge moves the station's skew, so it needs the aligned clock. Without one the buttons are hidden.
-        guard let clock = alignedClock else { return }
-        _ = clock.adjust(delta)
+        if let clock = alignedClock {
+            // Aligned: the nudge moves the station's skew, half a second at a time.
+            _ = clock.adjust(delta)
+            updateOffsetLabel()
+            if lyricsResult?.hasSynced == true { refreshAligned(scroll: true) }
+            return
+        }
+        // Not aligned: the saved per-station lyric offset, a whole second at a time.
+        let whole = delta < 0 ? -1.0 : 1.0
+        lyricOffset = delegate?.lyricsViewController(self, adjustLyricOffsetBy: whole) ?? (lyricOffset + whole)
         updateOffsetLabel()
-        if lyricsResult?.hasSynced == true { refreshAligned(scroll: true) }
+        guard isCurrentSong, lyricsResult?.hasSynced == true, let start = lyricStartDate else { return }
+        let offset = Date().timeIntervalSince(start) + lyricOffset
+        let (newIndex, newStatus) = lineState(for: offset)
+        applyLyricState(index: newIndex, status: newStatus)
     }
 
     private func loadArtwork() {
@@ -320,7 +344,7 @@ final class LyricsViewController: UIViewController {
     private func applyResult(_ result: LyricsResult?) {
         lyricsResult = result
         spinner.stopAnimating()
-        offsetControlsView?.isHidden = alignedClock == nil || !isCurrentSong || result?.hasSynced != true
+        offsetControlsView?.isHidden = !isCurrentSong || result?.hasSynced != true
 
         if result?.hasSynced == true {
             lyricStatus = .found
@@ -330,7 +354,7 @@ final class LyricsViewController: UIViewController {
                 alignedIndex = state.index
                 lyricStatus = state.betweenTracks ? .betweenTracks : .found
             } else {
-                currentLineIndex = startingIndex(for: initialOffset)
+                currentLineIndex = startingIndex(for: initialOffset + lyricOffset)
             }
             // If viewDidAppear already fired (result arrived late via network),
             // start interactive elements immediately; otherwise viewDidAppear handles it.
@@ -447,7 +471,7 @@ final class LyricsViewController: UIViewController {
 
     private func tick() {
         guard let start = lyricStartDate else { return }
-        let offset = Date().timeIntervalSince(start)
+        let offset = Date().timeIntervalSince(start) + lyricOffset
         let (newIndex, newStatus) = lineState(for: offset)
         applyLyricState(index: newIndex, status: newStatus)
     }

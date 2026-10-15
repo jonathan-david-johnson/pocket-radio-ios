@@ -20,6 +20,15 @@ final class StationDetailLyricsTests: XCTestCase {
         }
     }
 
+    private final class Store: LyricOffsetStore, @unchecked Sendable {
+        private let lock = NSLock()
+        private var calls = 0
+        var callCount: Int { lock.withLock { calls } }
+        func fetchOffsets() async -> [String: Int] { lock.withLock { calls += 1 }; return [:] }
+        func savedOffset(stationId: String) -> Int? { lock.withLock { calls += 1 }; return nil }
+        func saveOffset(stationId: String, seconds: Int) async { lock.withLock { calls += 1 } }
+    }
+
     /// Saved skews for the test, so nothing reads or writes the device's real ones.
     private final class SkewBox {
         private(set) var values: [String: Double] = [:]
@@ -55,6 +64,7 @@ final class StationDetailLyricsTests: XCTestCase {
     private let base = Date(timeIntervalSince1970: 1_700_000_000)
     private var loader = Loader()
     private var skews = SkewBox()
+    private var store = Store()
     private var ticks = Ticks()
     private var savedInfo: [String: Any]?
     private var navs: [UINavigationController] = []
@@ -107,6 +117,7 @@ final class StationDetailLyricsTests: XCTestCase {
         let lyrics = LyricSyncController(
             stationId: stationId, stationDisplayTitle: "KCRW",
             loader: { [loader] artist, title, album in await loader.load(artist: artist, title: title, album: album) },
+            offsetStore: store,
             scheduleTicks: { [ticks] in ticks.schedule($0) },
             skew: skews.adjuster)
         let station = RadioStation(stationId: stationId, name: "KCRW", streamUrl: "https://example.test/stream")
@@ -203,8 +214,10 @@ final class StationDetailLyricsTests: XCTestCase {
         let (_, lyrics) = makeDetail(applying)
         await lyrics.waitForFetch()
         lyrics.adjustOffset(by: 0.5)
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
 
         XCTAssertEqual(skews.values, [applying: 159.5])
+        XCTAssertEqual(store.callCount, 0, "an aligned station never reads or writes the saved lyric offsets")
     }
 
     // MARK: Leaving station detail
