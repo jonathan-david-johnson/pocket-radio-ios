@@ -23,7 +23,10 @@ final class ShazamManagedAnchorSource: OffsetAnchorSource {
                                         matchOffset: item.matchOffset,
                                         predictedOffset: item.predictedCurrentMatchOffset,
                                         confidence: confidence,
-                                        frequencySkew: Double(item.frequencySkew)))
+                                        frequencySkew: Double(item.frequencySkew),
+                                        shazamID: item.shazamID,
+                                        isrc: item.isrc,
+                                        candidates: match.mediaItems.compactMap(\.shazamID)))
         case .noMatch:
             return .noMatch
         case .error(let error, _):

@@ -47,7 +47,8 @@ struct SkewMeasurement: Equatable {
         return "[anchor] heard=\"\(shazam.title) — \(shazam.artist)\" predicted=\(String(format: "%.1f", shazam.predictedOffset)) "
             + "conf=\(confidence) row=\"\(entry.title)\" rows=\(matchingRows) "
             + "skew=\(String(format: "%.1f", skew)) inUse=\(String(format: "%.1f", currentSkew)) change=\(String(format: "%+.1f", change)) "
-            + "at=\(StreamTrace.iso(programDate)) start=\(StreamTrace.iso(startedInStream)) stamp=\(StreamTrace.iso(entry.playedAt))"
+            + "at=\(StreamTrace.iso(programDate)) start=\(StreamTrace.iso(startedInStream)) stamp=\(StreamTrace.iso(entry.playedAt)) "
+            + "sid=\(shazam.shazamID ?? "-") isrc=\(shazam.isrc ?? "-") cands=\(shazam.candidates.count)"
     }
 }
 

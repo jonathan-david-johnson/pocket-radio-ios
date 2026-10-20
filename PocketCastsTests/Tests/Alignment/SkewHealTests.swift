@@ -370,11 +370,11 @@ final class SkewHealerTests: XCTestCase {
     }
 
     func test_theMessagesTellTheStory() {
-        XCTAssertEqual(HealMessage.listening(2), "Listening… (2/3)")
-        XCTAssertEqual(HealMessage.heard(change: -3.2, 1), "Audio is 3.2 s ahead of the screen (1/3)")
-        XCTAssertEqual(HealMessage.heard(change: 5.0, 2), "Screen is 5.0 s ahead of the audio (2/3)")
-        XCTAssertEqual(HealMessage.heard(change: 0.3, 3), "In sync (3/3)")
-        XCTAssertEqual(HealMessage.heard(change: 158.2, 1), "Screen is 158 s ahead of the audio (1/3)")
+        XCTAssertEqual(HealMessage.listening(2), "Listening… (2)")
+        XCTAssertEqual(HealMessage.heard(change: -3.2, 1), "Audio is 3.2 s ahead of the screen (1)")
+        XCTAssertEqual(HealMessage.heard(change: 5.0, 2), "Screen is 5.0 s ahead of the audio (2)")
+        XCTAssertEqual(HealMessage.heard(change: 0.3, 3), "In sync (3)")
+        XCTAssertEqual(HealMessage.heard(change: 158.2, 1), "Screen is 158 s ahead of the audio (1)")
         XCTAssertEqual(HealMessage.corrected(by: -2.8, to: 157.2), "Timing corrected by -2.8 s. Skew 157.2 s")
         XCTAssertEqual(HealMessage.inSync(158.2), "In sync. Skew 158.2 s")
     }
@@ -387,8 +387,8 @@ final class SkewHealerTests: XCTestCase {
 
         XCTAssertTrue(ok)
         XCTAssertEqual(w.skew, 158.2, accuracy: 1.0)
-        XCTAssertEqual(w.attempts, 3)
-        XCTAssertEqual(messages.first, "Listening… (1/3)")
+        XCTAssertEqual(w.attempts, 2, "a big change needs a second anchor to agree")
+        XCTAssertEqual(messages.first, "Listening… (1)")
         XCTAssertTrue(messages.last?.hasPrefix("Timing corrected by") ?? false, "\(messages)")
         XCTAssertEqual(w.store.saved(for: w.stationId), w.skew, "it is saved, so the next session starts here")
     }
@@ -402,13 +402,29 @@ final class SkewHealerTests: XCTestCase {
         XCTAssertEqual(w.skew, 158.2, accuracy: 1.0)
     }
 
-    func test_aHealWhenAlreadyRightSaysSo() async {
+    func test_aHealWhenAlreadyRightSaysSoAfterOneAnchorAndLeavesTheSkewAlone() async {
         let w = world(start: 158.2)
         let (healer, _) = make(w)
         var messages: [String] = []
         await healer.heal { messages.append($0) }
+        XCTAssertEqual(w.attempts, 1, "close to the skew in use: one anchor is enough")
         XCTAssertTrue(messages.last?.hasPrefix("In sync. Skew") ?? false, "\(messages)")
+        XCTAssertEqual(w.skew, 158.2, "one noisy anchor does not nudge a skew that is already right")
         XCTAssertEqual(healer.lastResult, messages.last)
+    }
+
+    func test_aSmallChangeIsBelievedAtOnceAndABigOneNeedsASecondAnchor() async {
+        let small = world(start: 156.0)             // 2.2 s off
+        let (healer1, _) = make(small)
+        await healer1.heal { _ in }
+        XCTAssertEqual(small.attempts, 1)
+        XCTAssertEqual(small.skew, 158.2, accuracy: 1.0)
+
+        let big = world(start: 100, seed: 2)        // 58 s off
+        let (healer2, _) = make(big)
+        await healer2.heal { _ in }
+        XCTAssertEqual(big.attempts, 2)
+        XCTAssertEqual(big.skew, 158.2, accuracy: 1.0)
     }
 
     func test_withoutASessionItSaysSo() async {
@@ -551,11 +567,11 @@ final class SkewHealerTests: XCTestCase {
         XCTAssertEqual(results.filter { $0 }.count, 1)
     }
 
-    func test_agreedSkewNeedsThreeWithinASecondOfTheMedian() {
-        XCTAssertNil(SkewHealer.agreedSkew([158.2, 158.4]))
-        XCTAssertEqual(SkewHealer.agreedSkew([158.2, 158.4, 158.0]) ?? -1, 158.2, accuracy: 0.001)
-        XCTAssertNil(SkewHealer.agreedSkew([158.2, 158.4, 211.0]), "a wrong-section anchor leaves only two that agree")
-        XCTAssertEqual(SkewHealer.agreedSkew([158.2, 158.4, 211.0, 158.3]) ?? -1, 158.3, accuracy: 0.001)
+    func test_agreedSkewNeedsTwoWithinASecondOfTheMedian() {
+        XCTAssertNil(SkewHealer.agreedSkew([158.2]))
+        XCTAssertEqual(SkewHealer.agreedSkew([158.2, 158.4]) ?? -1, 158.3, accuracy: 0.001)
+        XCTAssertNil(SkewHealer.agreedSkew([158.2, 211.0]), "a wrong-section anchor has no one to agree with")
+        XCTAssertEqual(SkewHealer.agreedSkew([158.2, 211.0, 158.4]) ?? -1, 158.3, accuracy: 0.001)
         XCTAssertNil(SkewHealer.agreedSkew([150, 158, 166]), "spread out: none agree")
     }
 }

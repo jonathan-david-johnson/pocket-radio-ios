@@ -14,6 +14,11 @@ struct AnchorMatch: Equatable {
     let confidence: Double?
     /// 0 means the heard audio plays at the reference's speed.
     let frequencySkew: Double
+    /// Which recording ShazamKit matched, for the log. Two matches of one song to different recordings can sit seconds
+    /// apart in time, so a changed ID explains a jump. `candidates` are the IDs of every item the match returned.
+    var shazamID: String? = nil
+    var isrc: String? = nil
+    var candidates: [String] = []
 }
 
 enum AnchorOutcome: Equatable {

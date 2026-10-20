@@ -146,6 +146,7 @@ struct AlignmentObserveView: View {
     @ObservedObject private var healer = SkewHealer.shared
     @ObservedObject private var anchors = SkewHealer.shared.anchorProbe
     @ObservedObject private var micCheck = MicCheck.shared
+    @ObservedObject private var tracker = SkewTracker.shared
     @State private var timer: Timer?
 
     var body: some View {
@@ -174,6 +175,9 @@ struct AlignmentObserveView: View {
                     Text("Start KCRW or KEXP with alignment On to see its skew.").font(.footnote)
                 }
                 Text(healer.lastResult).font(.footnote)
+                Toggle("Track every 30 s (measure only)", isOn: Binding(get: { tracker.isOn },
+                                                                         set: { $0 ? tracker.start() : tracker.stop() }))
+                Text(tracker.lastLine).font(.footnote)
                 Button(anchors.isListening ? "Listening…" : "Heal now") { Task { await healer.heal { _ in } } }
                     .disabled(healer.isRunning)
                 Text(anchors.status).font(.footnote)

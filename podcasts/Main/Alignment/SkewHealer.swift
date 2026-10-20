@@ -4,9 +4,7 @@ import PocketCastsUtils
 
 /// The words shown while the timing recalibrates. Short, because they go in one header line.
 enum HealMessage {
-    static let anchorsNeeded = 3
-
-    static func listening(_ n: Int) -> String { "Listening… (\(n)/\(anchorsNeeded))" }
+    static func listening(_ n: Int) -> String { "Listening… (\(n))" }
 
     /// What one anchor found. `change` is how far the skew in use is from the one the anchor implies.
     static func heard(change: Double, _ n: Int) -> String {
@@ -18,7 +16,7 @@ enum HealMessage {
         } else {
             how = String(format: "Audio is %@ ahead of the screen", seconds(-change))
         }
-        return "\(how) (\(n)/\(anchorsNeeded))"
+        return "\(how) (\(n))"
     }
 
     private static func seconds(_ value: Double) -> String {
@@ -41,14 +39,21 @@ enum HealMessage {
     }
 }
 
-/// The heal: asks ShazamKit for a few anchors, and when three agree sets the station's skew to their median.
+/// The heal: asks ShazamKit for anchors. One that is close to the skew in use is enough; a big change needs two to agree. Then it sets the station's skew.
 /// It replaces the skew, including any fine-tune. It works from any starting skew (see `SkewSolver`). Debug only.
 @MainActor
 final class SkewHealer: ObservableObject {
     static let shared = SkewHealer()
     static let maxAttempts = 8
-    /// Anchors must agree within this many seconds to count toward the three.
+    /// Anchors must agree within this many seconds to count toward the pair.
     static let agreement = 1.0
+    /// How many anchors must agree before a big change is believed.
+    static let agreeing = 2
+    /// One anchor is enough when it is this close to the skew already in use: a refinement, not a jump. Seen on the device:
+    /// in 8 of 8 heals the first anchor was within 0.2 s of the last.
+    static let quickChange = 3.0
+    /// A single anchor closer than this to the skew in use leaves the skew as it is: it is noise, not a change.
+    static let deadband = 1.0
     /// Seconds between one listen and the next. ShazamKit refuses a session opened right after another one closes
     /// (it answers "Missing entitlements" at once), so the heal waits, as the earlier self-healing loop did.
     static let gap: TimeInterval = 5
@@ -114,7 +119,7 @@ final class SkewHealer: ObservableObject {
                 return false
             }
             attempts += 1
-            report(HealMessage.listening(min(learner.anchors.count + 1, HealMessage.anchorsNeeded)))
+            report(HealMessage.listening(learner.anchors.count + 1))
             var wait = Self.gap
             let result = await probe.anchorNow()
             guard session()?.generation == started.generation else {
@@ -125,7 +130,15 @@ final class SkewHealer: ObservableObject {
             case .measured(let measurement):
                 learner.add(OffsetAnchor(time: now(), delta: measurement.skew))
                 report(HealMessage.heard(change: measurement.change, learner.anchors.count))
-                agreed = Self.agreedSkew(learner.anchors.map(\.delta))
+                // A small change is believed at once. A big one, such as a first heal or a new song's edit, needs a second
+                // anchor to agree, which a wrong-section match cannot supply.
+                if abs(measurement.change) < Self.deadband {
+                    agreed = measurement.currentSkew          // already right: one noisy anchor must not move it
+                } else if abs(measurement.change) <= Self.quickChange {
+                    agreed = measurement.skew
+                } else {
+                    agreed = Self.agreedSkew(learner.anchors.map(\.delta))
+                }
             case .notInFeed(let title, _):
                 report(HealMessage.notInFeed(title))
                 if feedWaits < Self.maxFeedWaits {
@@ -151,7 +164,7 @@ final class SkewHealer: ObservableObject {
         }
         guard let skew = agreed else {
             emit("[heal] gave up after \(attempts) tries (\(skippedVersions) different versions)")
-            finish(skippedVersions > 0 && learner.anchors.count < HealMessage.anchorsNeeded
+            finish(skippedVersions > 0 && learner.anchors.isEmpty
                    ? HealMessage.onlyEditedVersions : HealMessage.gaveUp, report)
             return false
         }
@@ -173,13 +186,13 @@ final class SkewHealer: ObservableObject {
         report(message)
     }
 
-    /// The median of the anchors, when at least three of them sit within `agreement` of it. A wrong-section match
+    /// The median of the anchors, when at least `agreeing` of them sit within `agreement` of it. A wrong-section match
     /// that is far from the rest cannot move it.
     static func agreedSkew(_ values: [Double]) -> Double? {
-        guard values.count >= HealMessage.anchorsNeeded else { return nil }
+        guard values.count >= agreeing else { return nil }
         let median = OffsetLearner.median(values)
         let close = values.filter { abs($0 - median) <= agreement }
-        guard close.count >= HealMessage.anchorsNeeded else { return nil }
+        guard close.count >= agreeing else { return nil }
         return OffsetLearner.median(close)
     }
 
