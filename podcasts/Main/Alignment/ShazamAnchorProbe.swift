@@ -98,7 +98,11 @@ final class ShazamAnchorProbe: ObservableObject {
                 return .differentVersion(heard: match.title, feed: feedTitle)
             case .notInFeed:
                 status = "Heard \"\(match.title)\", which isn't in the tracklist yet"
-                emit("[anchor] heard=\"\(match.title) — \(match.artist)\" not in the feed's \(after.candidates.count) rows")
+                // When a row has the same title and only the artist differs, say so: it is the likeliest way to miss a real match.
+                let sameTitle = after.candidates.filter { AnchorIdentity.titlesMatch($0.title, match.title) }
+                    .map { "\"\($0.artist)\"" }.joined(separator: ", ")
+                emit("[anchor] heard=\"\(match.title) — \(match.artist)\" not in the feed's \(after.candidates.count) rows"
+                    + (sameTitle.isEmpty ? "" : " (same title, other artist: \(sameTitle))"))
                 return .notInFeed(title: match.title, artist: match.artist)
             }
             emit(measurement.logLine())

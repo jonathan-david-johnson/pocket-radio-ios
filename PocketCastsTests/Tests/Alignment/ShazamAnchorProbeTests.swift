@@ -30,6 +30,21 @@ final class AnchorIdentityTests: XCTestCase {
         XCTAssertTrue(same("Song", "Bob Moses", "Song", "Bob Moses & Friends"))
     }
 
+    // Seen on KEXP (2026-10-20): the feed wrote the artist in kanji and ShazamKit in Latin letters, so a real match was refused.
+    func test_anArtistInAnotherScriptIsTheSameArtistSpelledDifferently() {
+        XCTAssertTrue(same("Fantastic Cat", "嶺川貴子", "Fantastic Cat", "Takako Minekawa"))
+        XCTAssertTrue(same("Fantastic Cat", "Takako Minekawa", "Fantastic Cat", "嶺川貴子"))
+        XCTAssertTrue(same("Kukushka", "Кино", "Kukushka", "Kino"))
+        XCTAssertFalse(same("Fantastic Cat", "嶺川貴子", "Different Song", "Takako Minekawa"), "the title still has to match")
+        XCTAssertFalse(same("Fine", "The Cardigans", "Fine", "Harry Styles"), "two Latin-letter artists that differ still contradict")
+        XCTAssertFalse(same("Fine", "嶺川貴子", "Fine", "嶺川"), "two non-Latin artists still compare by name")
+    }
+
+    func test_titlesMatchIgnoresTheArtist() {
+        XCTAssertTrue(AnchorIdentity.titlesMatch("Fantastic Cat", "fantastic cat (Remastered)"))
+        XCTAssertFalse(AnchorIdentity.titlesMatch("Fantastic Cat", "Cat"), "a short title is not contained in a longer one")
+    }
+
     func test_normalizeStripsTheNoise() {
         XCTAssertEqual(AnchorIdentity.normalize("Héllo,  WORLD!! (Live) [Remastered]"), "hello world")
     }

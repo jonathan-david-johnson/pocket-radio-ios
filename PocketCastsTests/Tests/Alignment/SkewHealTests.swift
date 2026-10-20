@@ -187,6 +187,15 @@ final class SkewProbeTests: XCTestCase {
         XCTAssertTrue(probe.status.contains("isn't in the tracklist yet"))
     }
 
+    func test_aRowWithTheSameTitleButAnotherArtistIsNamedInTheLog() async {
+        let source = Scripted(), state = State()
+        state.context = context(rows: [SkewCandidate(title: "Fine", artist: "Someone Else", playedAt: base)])
+        source.outcomes = [match(30)]
+        _ = await make(source, state).anchorNow()
+        let line = state.lines.first { $0.contains("not in the feed") }
+        XCTAssertTrue(line?.contains("(same title, other artist: \"Someone Else\")") ?? false, "\(state.lines)")
+    }
+
     func test_withoutASessionNothingListens() async {
         let source = Scripted(), state = State()
         let probe = make(source, state)

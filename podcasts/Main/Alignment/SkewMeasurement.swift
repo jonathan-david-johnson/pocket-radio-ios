@@ -84,12 +84,23 @@ enum SkewSolver {
 /// Does ShazamKit's song name the song the app is showing? A wrong-song match must never move the offset.
 enum AnchorIdentity {
     static func matches(alignedTitle: String, alignedArtist: String, shazamTitle: String, shazamArtist: String) -> Bool {
-        let t1 = normalize(alignedTitle), t2 = normalize(shazamTitle)
-        guard !t1.isEmpty, !t2.isEmpty, related(t1, t2) else { return false }
+        guard titlesMatch(alignedTitle, shazamTitle) else { return false }
         let a1 = normalize(alignedArtist), a2 = normalize(shazamArtist)
         // An artist the feed or ShazamKit omits can't contradict the title.
         guard !a1.isEmpty, !a2.isEmpty else { return true }
-        return related(a1, a2) || sharesAToken(a1, a2)
+        // An artist written in another script is the same artist spelled differently: the feed said "嶺川貴子" where
+        // ShazamKit said "Takako Minekawa" (seen on KEXP). The titles already match, so a script difference is not a contradiction.
+        return related(a1, a2) || sharesAToken(a1, a2) || hasLatin(a1) != hasLatin(a2)
+    }
+
+    /// Whether two titles name the same song, ignoring the artist.
+    static func titlesMatch(_ a: String, _ b: String) -> Bool {
+        let t1 = normalize(a), t2 = normalize(b)
+        return !t1.isEmpty && !t2.isEmpty && related(t1, t2)
+    }
+
+    private static func hasLatin(_ text: String) -> Bool {
+        text.unicodeScalars.contains { $0.properties.isAlphabetic && $0.value < 0x250 }
     }
 
     /// Words that mark a different recording of the same song, whose timeline differs from the original's.
