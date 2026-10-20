@@ -59,8 +59,15 @@ final class ShazamAnchorProbe: ObservableObject {
         // Which input hears the audio, and which output plays it, so a heal that worked on headphones can be explained.
         emit("[anchor] listening \(route())")
 
+        // ShazamKit closes its own audio session before it answers, so the route read after listening shows nothing of it.
+        // Read it again in the middle of the listen, when its session (if it opens one) is active.
+        let midListen = Task { @MainActor [route, emit] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
+            emit("[anchor] during listen \(route())")
+        }
         let outcome = await race()
-        // Read again now: ShazamKit has switched the audio session by this point, so this is the input it used.
+        midListen.cancel()
         emit("[anchor] heard on \(route())")
         switch outcome {
         case .noMatch:
@@ -144,7 +151,8 @@ final class ShazamAnchorProbe: ObservableObject {
         func describe(_ ports: [AVAudioSessionPortDescription]) -> String {
             ports.map { "\($0.portType.rawValue) \"\($0.portName)\"" }.joined(separator: ", ")
         }
-        return "in=[\(describe(route.inputs))] out=[\(describe(route.outputs))]"
+        let session = AVAudioSession.sharedInstance()
+        return "category=\(session.category.rawValue) in=[\(describe(route.inputs))] out=[\(describe(route.outputs))]"
     }
 
     /// The live session's program date, feed rows and skew. Nil without a session or a valid player clock.
