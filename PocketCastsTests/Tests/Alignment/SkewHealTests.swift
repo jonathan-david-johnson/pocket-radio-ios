@@ -404,6 +404,7 @@ final class SkewHealerTests: XCTestCase {
 
     func test_aHealWhenAlreadyRightSaysSoAfterOneAnchorAndLeavesTheSkewAlone() async {
         let w = world(start: 158.2)
+        w.noise = 0.1   // ShazamKit's real spread inside a song, 0.1 to 0.2 s on the device
         let (healer, _) = make(w)
         var messages: [String] = []
         await healer.heal { messages.append($0) }

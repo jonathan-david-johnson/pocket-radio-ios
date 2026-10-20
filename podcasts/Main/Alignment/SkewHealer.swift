@@ -53,7 +53,7 @@ final class SkewHealer: ObservableObject {
     /// in 8 of 8 heals the first anchor was within 0.2 s of the last.
     static let quickChange = 3.0
     /// A single anchor closer than this to the skew in use leaves the skew as it is: it is noise, not a change.
-    static let deadband = 1.0
+    static let deadband = 0.5
     /// Seconds between one listen and the next. ShazamKit refuses a session opened right after another one closes
     /// (it answers "Missing entitlements" at once), so the heal waits, as the earlier self-healing loop did.
     static let gap: TimeInterval = 5
