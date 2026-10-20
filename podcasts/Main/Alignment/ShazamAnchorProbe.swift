@@ -17,15 +17,18 @@ final class ShazamAnchorProbe: ObservableObject {
     private let source: OffsetAnchorSource
     private let context: () -> HealContext?
     private let emit: (String) -> Void
+    private let route: () -> String
     private let timeout: TimeInterval
 
     init(source: OffsetAnchorSource = ShazamManagedAnchorSource(),
          context: @escaping () -> HealContext? = ShazamAnchorProbe.currentContext,
          emit: @escaping (String) -> Void = { FileLog.shared.addMessage($0) },
+         route: @escaping () -> String = ShazamAnchorProbe.routeDescription,
          timeout: TimeInterval = 25) {
         self.source = source
         self.context = context
         self.emit = emit
+        self.route = route
         self.timeout = timeout
     }
 
@@ -53,6 +56,8 @@ final class ShazamAnchorProbe: ObservableObject {
         isListening = true
         status = "Listening to the speaker…"
         defer { isListening = false }
+        // Which input hears the audio, and which output plays it, so a heal that worked on headphones can be explained.
+        emit("[anchor] listening \(route())")
 
         let outcome = await race()
         switch outcome {
@@ -130,6 +135,15 @@ final class ShazamAnchorProbe: ObservableObject {
     }
 
     // MARK: - Defaults
+
+    /// The audio route the microphone listens on, for the log: `in=[type name] out=[type name]`.
+    static func routeDescription() -> String {
+        let route = AVAudioSession.sharedInstance().currentRoute
+        func describe(_ ports: [AVAudioSessionPortDescription]) -> String {
+            ports.map { "\($0.portType.rawValue) \"\($0.portName)\"" }.joined(separator: ", ")
+        }
+        return "in=[\(describe(route.inputs))] out=[\(describe(route.outputs))]"
+    }
 
     /// The live session's program date, feed rows and skew. Nil without a session or a valid player clock.
     static func currentContext() -> HealContext? {
