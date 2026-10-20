@@ -60,6 +60,8 @@ final class ShazamAnchorProbe: ObservableObject {
         emit("[anchor] listening \(route())")
 
         let outcome = await race()
+        // Read again now: ShazamKit has switched the audio session by this point, so this is the input it used.
+        emit("[anchor] heard on \(route())")
         switch outcome {
         case .noMatch:
             status = "No match"
