@@ -145,6 +145,7 @@ struct AlignmentObserveView: View {
     @StateObject private var model = AlignmentObserveViewModel()
     @ObservedObject private var healer = SkewHealer.shared
     @ObservedObject private var anchors = SkewHealer.shared.anchorProbe
+    @ObservedObject private var micCheck = MicCheck.shared
     @State private var timer: Timer?
 
     var body: some View {
@@ -184,6 +185,21 @@ struct AlignmentObserveView: View {
                 Text("Skew")
             } footer: {
                 Text("The skew is the difference between the stream's timeline and the tracklist's. Heal listens to the speaker with ShazamKit, finds the heard song in the tracklist, and sets it from any starting value. The buttons set a wrong skew to test the heal. The lyrics page's + and − fine-tune it by 0.5 s.")
+            }
+
+            Section {
+                Text(micCheck.status).font(.footnote)
+                HStack {
+                    Button("Headphones") { Task { await micCheck.run(label: "headphones") } }
+                    Button("Speaker") { Task { await micCheck.run(label: "speaker") } }
+                    Button("Silence") { Task { await micCheck.run(label: "silence") } }
+                }
+                .buttonStyle(.bordered)
+                .disabled(micCheck.isRunning)
+            } header: {
+                Text("Microphone check")
+            } footer: {
+                Text("Records 6 s and logs how loud the microphone hears things, and which input and output are in use. Run it with a station playing, on headphones and on the speaker, and with nothing playing. Equal levels with headphones and with nothing playing mean the microphone is not hearing the headphones.")
             }
 
             Section("Active session") {
