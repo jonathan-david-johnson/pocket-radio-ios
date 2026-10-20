@@ -42,7 +42,7 @@ final class StationDetailRecalibrateTests: XCTestCase {
         let vc = makeScreen()
         vc.calibrationResultHold = 60
         vc.recalibrationRunner = { report in
-            report("Listening to the speaker… (1/3)")
+            report("Listening… (1/3)")
             report("Audio is 3.0 s ahead of the screen (1/3)")
             report("Timing corrected by +3.0 s")
             return true
@@ -62,12 +62,12 @@ final class StationDetailRecalibrateTests: XCTestCase {
         let sync = LyricSyncController(stationId: stationId, stationDisplayTitle: "KCRW")
         let vc = makeScreen(lyricSync: sync)
         vc.calibrationResultHold = 60
-        vc.recalibrationRunner = { report in report("Listening to the speaker… (1/3)"); return true }
+        vc.recalibrationRunner = { report in report("Listening… (1/3)"); return true }
         vc._tapHealForTesting()
         await pump()
 
         vc.lyricSyncController(sync, didUpdateHeaderText: "♪ some lyric line")
-        XCTAssertEqual(vc._headerTextForTesting, "Listening to the speaker… (1/3)")
+        XCTAssertEqual(vc._headerTextForTesting, "Listening… (1/3)")
     }
 
     func test_theHeaderHandsBackToTheLyricsAfterTheResultHold() async {
@@ -86,7 +86,7 @@ final class StationDetailRecalibrateTests: XCTestCase {
         var runs = 0
         vc.recalibrationRunner = { report in
             runs += 1
-            report("Listening to the speaker… (1/3)")
+            report("Listening… (1/3)")
             try? await Task.sleep(nanoseconds: 300_000_000)
             return true
         }
@@ -101,7 +101,7 @@ final class StationDetailRecalibrateTests: XCTestCase {
         vc.calibrationResultHold = 60
         var finished = false
         vc.recalibrationRunner = { report in
-            report("Listening to the speaker… (1/3)")
+            report("Listening… (1/3)")
             try? await Task.sleep(nanoseconds: 300_000_000)
             finished = !Task.isCancelled
             report("Timing corrected by +3.0 s")

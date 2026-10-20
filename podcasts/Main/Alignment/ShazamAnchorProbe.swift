@@ -50,11 +50,11 @@ final class ShazamAnchorProbe: ObservableObject {
     func anchorNow() async -> Result {
         guard !isListening else { return .failed("Already listening") }
         guard let before = context() else {
-            status = "Needs alignment On, a station playing, and the speaker audible"
+            status = "Needs alignment On and a station playing"
             return .notRunning
         }
         isListening = true
-        status = "Listening to the speaker…"
+        status = "Listening…"
         defer { isListening = false }
         // Which input hears the audio, and which output plays it, so a heal that worked on headphones can be explained.
         emit("[anchor] listening \(route())")

@@ -2,9 +2,10 @@
 import Foundation
 import ShazamKit
 
-/// Listens to the microphone through ShazamKit and reports the first match. The mic hears the speaker, so
-/// the offset it reports includes the output delay. It works only where the mic can hear the audio: the phone's
-/// own speaker or a car cabin. See ADR 0010.
+/// Asks ShazamKit's managed session for the first match. On the phone this heard the app's own playback, not the room: a
+/// heal matched the station's song with the phone in a drawer, the headphone volume at zero, and a different song playing
+/// loudly nearby, and the audio session stayed on playback with no input. So the offset it reports is the stream's timeline
+/// before the output, without any speaker or Bluetooth delay (ADR 0010).
 final class ShazamManagedAnchorSource: OffsetAnchorSource {
     private var session: SHManagedSession?
 

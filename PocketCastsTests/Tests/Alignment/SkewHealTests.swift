@@ -370,7 +370,7 @@ final class SkewHealerTests: XCTestCase {
     }
 
     func test_theMessagesTellTheStory() {
-        XCTAssertEqual(HealMessage.listening(2), "Listening to the speaker… (2/3)")
+        XCTAssertEqual(HealMessage.listening(2), "Listening… (2/3)")
         XCTAssertEqual(HealMessage.heard(change: -3.2, 1), "Audio is 3.2 s ahead of the screen (1/3)")
         XCTAssertEqual(HealMessage.heard(change: 5.0, 2), "Screen is 5.0 s ahead of the audio (2/3)")
         XCTAssertEqual(HealMessage.heard(change: 0.3, 3), "In sync (3/3)")
@@ -388,7 +388,7 @@ final class SkewHealerTests: XCTestCase {
         XCTAssertTrue(ok)
         XCTAssertEqual(w.skew, 158.2, accuracy: 1.0)
         XCTAssertEqual(w.attempts, 3)
-        XCTAssertEqual(messages.first, "Listening to the speaker… (1/3)")
+        XCTAssertEqual(messages.first, "Listening… (1/3)")
         XCTAssertTrue(messages.last?.hasPrefix("Timing corrected by") ?? false, "\(messages)")
         XCTAssertEqual(w.store.saved(for: w.stationId), w.skew, "it is saved, so the next session starts here")
     }

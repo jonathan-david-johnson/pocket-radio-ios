@@ -6,7 +6,7 @@ import PocketCastsUtils
 enum HealMessage {
     static let anchorsNeeded = 3
 
-    static func listening(_ n: Int) -> String { "Listening to the speaker… (\(n)/\(anchorsNeeded))" }
+    static func listening(_ n: Int) -> String { "Listening… (\(n)/\(anchorsNeeded))" }
 
     /// What one anchor found. `change` is how far the skew in use is from the one the anchor implies.
     static func heard(change: Double, _ n: Int) -> String {
@@ -31,7 +31,7 @@ enum HealMessage {
     static let cancelled = "Calibration was cancelled. Try again."
     static let notRunning = "Start a station with alignment On first"
     static let sessionChanged = "The station changed. Try again."
-    static let gaveUp = "Couldn't calibrate. Check the speaker is audible and try again."
+    static let gaveUp = "Couldn't calibrate. Check the station is playing and try again."
     static let outOfRange = "The result was out of range, so nothing changed. Try again."
 
     static func failed(_ status: String) -> String { "\(status). Trying again…" }
@@ -41,7 +41,7 @@ enum HealMessage {
     }
 }
 
-/// The heal: listens to the speaker for a few anchors, and when three agree sets the station's skew to their median.
+/// The heal: asks ShazamKit for a few anchors, and when three agree sets the station's skew to their median.
 /// It replaces the skew, including any fine-tune. It works from any starting skew (see `SkewSolver`). Debug only.
 @MainActor
 final class SkewHealer: ObservableObject {

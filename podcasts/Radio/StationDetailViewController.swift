@@ -126,7 +126,7 @@ class StationDetailViewController: SimpleNotificationsViewController {
     private var calibrationHoldTask: Task<Void, Never>?
     /// How long the result stays in the header before the lyrics return. Tests shorten it.
     var calibrationResultHold: TimeInterval = 5
-    /// Runs the recalibration. Tests replace it so nothing listens to a microphone.
+    /// Runs the recalibration. Tests replace it so nothing reaches ShazamKit.
     var recalibrationRunner: (@MainActor (@escaping @MainActor (String) -> Void) async -> Bool)?
     #endif
 
@@ -144,7 +144,7 @@ class StationDetailViewController: SimpleNotificationsViewController {
 
     private var remoteObservers: [NSObjectProtocol] = []
 
-    /// Heals the station's skew: listens to the speaker with ShazamKit and sets the skew. It replaced the
+    /// Heals the station's skew: asks ShazamKit which song is playing and where in it, and sets the skew. It replaced the
     /// ACR Identify button in this slot (ADR 0009). Shown only while an aligned session runs for this station.
     private lazy var healButton: UIButton = {
         var config = UIButton.Configuration.tinted()

@@ -22,7 +22,7 @@ enum AnchorOutcome: Equatable {
     case error(String)
 }
 
-/// A source of ground truth about what is audible. Production listens to the microphone through ShazamKit;
+/// A source of ground truth about what is audible. Production asks ShazamKit, which hears the phone's own playback;
 /// tests script it. See ADR 0010.
 protocol OffsetAnchorSource {
     func anchor() async -> AnchorOutcome

@@ -11,7 +11,7 @@ extension Notification.Name {
 /// song position behind the lyrics, the lock screen and the widget all read it, so one change moves them together.
 ///
 /// A heal replaces it. The `+` and `−` on the lyrics page add or subtract `nudgeStep`. It is saved per station on
-/// this device, because it depends on this device and its speaker. Every list entry for one aligned stream shares one
+/// this device, because it depends on this device and its output. Every list entry for one aligned stream shares one
 /// skew (see `AlignmentProfile.key`). A stream never saved starts at its seed, which is 0 unless the stream is known.
 final class AlignmentSkewStore {
     static let shared = AlignmentSkewStore(defaults: runtimeDefaults(), seed: AlignmentSkewStore.productionSeed,
