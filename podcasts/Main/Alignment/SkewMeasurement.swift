@@ -5,8 +5,10 @@ import Foundation
 struct SkewCandidate: Equatable {
     let title: String
     let artist: String
-    /// When the feed says the song played. Wall clock.
+    /// When the feed says the song played. Wall clock. Always the feed's own stamp, never one moved by a per-song offset.
     let playedAt: Date
+    /// The feed's id for the row, which per-song offsets are kept under. Nil when the feed gives none.
+    var rowKey: String? = nil
 }
 
 /// What the app could read at the instant a heal anchor came back: the stream's program date, the rows the feed

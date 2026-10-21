@@ -437,6 +437,43 @@ final class SkewHealerTests: XCTestCase {
         XCTAssertEqual(big.skew, 158.2, accuracy: 1.0)
     }
 
+    func test_aStationWithPerSongOffsetsKeepsTheResultForThatSongAndMovesTheDefault() async {
+        let w = world(start: 0)
+        var offsets: [String: Double] = [:]
+        let control = PerSongControl(effective: { key in key.flatMap { offsets[$0] } ?? w.store.skew(for: w.stationId) },
+                                     set: { value, key in offsets[key] = value; return true })
+        let healer = SkewHealer(probe: ShazamAnchorProbe(source: WorldSource { w.outcome() }, context: { w.context() },
+                                                         emit: { _ in }, timeout: 10),
+                                store: w.store, session: { (w.generation, w.stationId) }, perSong: { control },
+                                now: { w.programTime }, emit: { _ in }, sleep: { w.programTime += $0 })
+        var messages: [String] = []
+        let ok = await healer.heal { messages.append($0) }
+
+        XCTAssertTrue(ok, "\(messages)")
+        XCTAssertEqual(offsets.count, 1, "one song's offset was recorded")
+        XCTAssertEqual(offsets.values.first ?? 0, 158.2, accuracy: 1.0)
+        XCTAssertEqual(w.skew, 158.2, accuracy: 1.0, "the stream default follows, for the next song")
+        XCTAssertTrue(messages.last?.hasPrefix("Timing corrected by") ?? false, "\(messages)")
+    }
+
+    func test_aSongWithItsOwnOffsetIsJudgedAgainstThatOffsetNotTheDefault() async {
+        let w = world(start: 0)
+        // The default is 0, but this song already has the right offset: the heal finds it in sync.
+        var offsets: [String: Double] = [:]
+        w.feed.rows(at: w.programTime).forEach { if let key = $0.rowKey { offsets[key] = 158.2 } }
+        w.noise = 0.1
+        let control = PerSongControl(effective: { key in key.flatMap { offsets[$0] } ?? w.store.skew(for: w.stationId) },
+                                     set: { value, key in offsets[key] = value; return true })
+        let healer = SkewHealer(probe: ShazamAnchorProbe(source: WorldSource { w.outcome() }, context: { w.context() },
+                                                         emit: { _ in }, timeout: 10),
+                                store: w.store, session: { (w.generation, w.stationId) }, perSong: { control },
+                                now: { w.programTime }, emit: { _ in }, sleep: { w.programTime += $0 })
+        var messages: [String] = []
+        await healer.heal { messages.append($0) }
+        XCTAssertEqual(w.attempts, 1, "within 0.5 s of the song's own offset: one anchor, nothing to change")
+        XCTAssertTrue(messages.last?.hasPrefix("In sync") ?? false, "\(messages)")
+    }
+
     func test_withoutASessionItSaysSo() async {
         let w = world(start: 0)
         let healer = SkewHealer(probe: ShazamAnchorProbe(source: WorldSource { w.outcome() }, context: { w.context() }, emit: { _ in }),

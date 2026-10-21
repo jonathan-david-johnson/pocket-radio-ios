@@ -163,9 +163,11 @@ final class ShazamAnchorProbe: ObservableObject {
     static func currentContext() -> HealContext? {
         guard let session = RadioPlaybackSession.active, !session.isStopped,
               let programDate = session.currentProgramDate() else { return nil }
-        let rows = session.feedRows.compactMap { occurrence -> SkewCandidate? in
-            guard let title = occurrence.title, let playedAt = occurrence.playedAt else { return nil }
-            return SkewCandidate(title: title, artist: occurrence.artist ?? "", playedAt: playedAt)
+        // The feed's own stamps, not the history's: a per-song offset moves a row's stamp there, and the solver must measure
+        // against the original.
+        let rows = session.rawFeedRows.compactMap { row -> SkewCandidate? in
+            guard let title = row.title, let playedAt = row.playedAt else { return nil }
+            return SkewCandidate(title: title, artist: row.artist ?? "", playedAt: playedAt, rowKey: row.providerID)
         }
         return HealContext(generation: session.generation, stationId: session.stationId, programDate: programDate,
                            candidates: rows, currentSkew: session.appliedSkew ?? AlignmentSkewStore.shared.skew(for: session.stationId))

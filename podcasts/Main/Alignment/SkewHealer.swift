@@ -39,6 +39,21 @@ enum HealMessage {
     }
 }
 
+/// What the heal and the tracker need from a session that keeps per-song offsets (`AlignmentProfile.perSongOffsets`).
+struct PerSongControl {
+    /// The skew for a feed row: its own offset, else the stream skew.
+    let effective: @MainActor (String?) -> Double
+    /// Records the skew measured for a row. False when the session refuses it.
+    let set: @MainActor (Double, String) -> Bool
+
+    /// The control for the live session, when its profile keeps per-song offsets.
+    @MainActor static func live() -> PerSongControl? {
+        guard let session = RadioPlaybackSession.active, !session.isStopped, session.profile.perSongOffsets else { return nil }
+        return PerSongControl(effective: { [weak session] in session?.effectiveSkew(forRow: $0) ?? 0 },
+                              set: { [weak session] in session?.setSongOffset($0, forRow: $1) ?? false })
+    }
+}
+
 /// The heal: asks ShazamKit for anchors. One that is close to the skew in use is enough; a big change needs two to agree. Then it sets the station's skew.
 /// It replaces the skew, including any fine-tune. It works from any starting skew (see `SkewSolver`). Debug only.
 @MainActor
@@ -68,6 +83,7 @@ final class SkewHealer: ObservableObject {
     private let probe: ShazamAnchorProbe
     private let store: AlignmentSkewStore
     private let session: @MainActor () -> (generation: UUID, stationId: String)?
+    private let perSong: @MainActor () -> PerSongControl?
     private let now: () -> TimeInterval
     private let emit: (String) -> Void
     private let sleep: (TimeInterval) async -> Void
@@ -77,12 +93,14 @@ final class SkewHealer: ObservableObject {
          session: @escaping @MainActor () -> (generation: UUID, stationId: String)? = {
              RadioPlaybackSession.active.flatMap { $0.isStopped ? nil : ($0.generation, $0.stationId) }
          },
+         perSong: @escaping @MainActor () -> PerSongControl? = { PerSongControl.live() },
          now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          emit: @escaping (String) -> Void = { FileLog.shared.addMessage($0) },
          sleep: @escaping (TimeInterval) async -> Void = { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }) {
         self.probe = probe ?? ShazamAnchorProbe()
         self.store = store
         self.session = session
+        self.perSong = perSong
         self.now = now
         self.emit = emit
         self.sleep = sleep
@@ -110,6 +128,8 @@ final class SkewHealer: ObservableObject {
         var skippedVersions = 0
         var feedWaits = 0
         var agreed: Double?
+        var healedRow: String?
+        let control = perSong()
         while agreed == nil, attempts < Self.maxAttempts {
             // A cancelled task makes every sleep return at once, so the listens would run back to back and ShazamKit
             // would refuse each one. Stop instead of burning the attempts.
@@ -129,12 +149,16 @@ final class SkewHealer: ObservableObject {
             switch result {
             case .measured(let measurement):
                 learner.add(OffsetAnchor(time: now(), delta: measurement.skew))
-                report(HealMessage.heard(change: measurement.change, learner.anchors.count))
+                // A song with its own offset is judged against that offset, not against the stream skew.
+                let current = control?.effective(measurement.entry.rowKey) ?? measurement.currentSkew
+                let change = measurement.skew - current
+                healedRow = measurement.entry.rowKey
+                report(HealMessage.heard(change: change, learner.anchors.count))
                 // A small change is believed at once. A big one, such as a first heal or a new song's edit, needs a second
                 // anchor to agree, which a wrong-section match cannot supply.
-                if abs(measurement.change) < Self.deadband {
-                    agreed = measurement.currentSkew          // already right: one noisy anchor must not move it
-                } else if abs(measurement.change) <= Self.quickChange {
+                if abs(change) < Self.deadband {
+                    agreed = current                          // already right: one noisy anchor must not move it
+                } else if abs(change) <= Self.quickChange {
                     agreed = measurement.skew
                 } else {
                     agreed = Self.agreedSkew(learner.anchors.map(\.delta))
@@ -168,14 +192,23 @@ final class SkewHealer: ObservableObject {
                    ? HealMessage.onlyEditedVersions : HealMessage.gaveUp, report)
             return false
         }
-        let before = store.skew(for: started.stationId)
-        guard store.set(skew, for: started.stationId) else {
+        // A station with per-song offsets keeps the result for this song, and the stream skew follows as the default for the
+        // next one. Any other station replaces its stream skew.
+        let rowKey = control != nil ? healedRow : nil
+        let before = rowKey.flatMap { control?.effective($0) } ?? store.skew(for: started.stationId)
+        if let rowKey, let control, !control.set(skew, rowKey) {
             emit("[heal] result \(String(format: "%.1f", skew)) s is out of range; nothing changed")
             finish(HealMessage.outOfRange, report)
             return false
         }
-        let after = store.skew(for: started.stationId)
-        emit("[heal] skew \(String(format: "%.1f", before)) -> \(String(format: "%.1f", after)) s")
+        guard store.set(skew, for: started.stationId) || rowKey != nil else {
+            emit("[heal] result \(String(format: "%.1f", skew)) s is out of range; nothing changed")
+            finish(HealMessage.outOfRange, report)
+            return false
+        }
+        let after = rowKey != nil ? skew : store.skew(for: started.stationId)
+        emit("[heal] skew \(String(format: "%.1f", before)) -> \(String(format: "%.1f", after)) s"
+            + (rowKey != nil ? " (this song only; stream default now \(String(format: "%.1f", store.skew(for: started.stationId))) s)" : ""))
         let change = after - before
         finish(abs(change) < 0.5 ? HealMessage.inSync(after) : HealMessage.corrected(by: change, to: after), report)
         return true

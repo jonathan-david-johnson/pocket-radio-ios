@@ -386,6 +386,85 @@ final class RadioPlaybackSessionTests: XCTestCase {
         XCTAssertEqual(session.appliedSkew, 0)
     }
 
+    // MARK: - Per-song offsets (KEXP)
+
+    private func songRow(_ id: String, _ title: String, stampedAt offset: TimeInterval) -> OccurrenceInput {
+        OccurrenceInput(station: "kexp", providerID: id, kind: "trackplay", title: title, artist: "Artist", album: nil,
+                        artworkURL: nil, playedAt: base.addingTimeInterval(offset))
+    }
+
+    private func perSongSession(stream: Double = 0) -> RadioPlaybackSession {
+        harness.skew = stream
+        let session = makeSession(profile: AlignmentProfiles.kexp, wallNow: { self.base })
+        session.accept(AlignmentFeedResult(entries: [songRow("2", "Song B", stampedAt: 100), songRow("1", "Song A", stampedAt: 0)],
+                                           statusCode: 200, cacheAgeSeconds: nil, failure: nil),
+                       requestedElapsed: 1, receivedElapsed: 2)
+        return session
+    }
+
+    func testASongOffsetMovesThatSongsPositionAndNotTheStreamSkew() {
+        let session = perSongSession()
+        tick(session, elapsed: 10, media: 50, program: base.addingTimeInterval(130))
+        XCTAssertEqual(session.snapshot.candidate, "Song B — Artist")
+        XCTAssertEqual(session.snapshot.songSeconds ?? -1, 30, accuracy: 0.001, "stream skew 0: song B began at its stamp")
+
+        XCTAssertTrue(session.setSongOffset(20, forRow: "2"))
+        tick(session, elapsed: 11, media: 51, program: base.addingTimeInterval(131))
+        XCTAssertEqual(session.snapshot.songSeconds ?? -1, 11, accuracy: 0.001, "song B's own offset: it began 20 s after its stamp")
+        XCTAssertEqual(session.appliedSkew, 0, "the stream skew did not move")
+        XCTAssertEqual(session.effectiveSkew(forRow: "2"), 20)
+        XCTAssertEqual(session.effectiveSkew(forRow: "1"), 0, "another song keeps the stream skew")
+    }
+
+    func testAnOffsetThatPutsTheSongInTheFutureSelectsThePreviousSong() {
+        let session = perSongSession()
+        XCTAssertTrue(session.setSongOffset(60, forRow: "2"))   // B began at 160 in the stream, not 100
+        tick(session, elapsed: 10, media: 50, program: base.addingTimeInterval(130))
+        XCTAssertEqual(session.snapshot.candidate, "Song A — Artist", "at 130 song B has not started yet: the title follows the measured start")
+        XCTAssertEqual(session.snapshot.songSeconds ?? -1, 130, accuracy: 0.001)
+    }
+
+    func testANewStreamSkewKeepsAMeasuredSongsOwnStart() {
+        let session = perSongSession()
+        XCTAssertTrue(session.setSongOffset(20, forRow: "2"))
+        harness.skew = 5                                        // the stream default changes
+        tick(session, elapsed: 10, media: 50, program: base.addingTimeInterval(130))
+        XCTAssertEqual(session.appliedSkew, 5)
+        XCTAssertEqual(session.snapshot.candidate, "Song B — Artist")
+        XCTAssertEqual(session.snapshot.songSeconds ?? -1, 10, accuracy: 0.001, "song B still began at its stamp + 20")
+    }
+
+    func testTheFeedsOwnStampsAreKeptForTheSolver() {
+        let session = perSongSession()
+        XCTAssertTrue(session.setSongOffset(20, forRow: "2"))
+        XCTAssertEqual(session.rawFeedRows.first { $0.providerID == "2" }?.playedAt, base.addingTimeInterval(100),
+                       "the history's stamp moved, the raw row did not")
+    }
+
+    func testAStationWithOneStreamSkewKeepsNoSongOffsets() {
+        let session = makeSession(profile: AlignmentProfiles.kcrw)
+        XCTAssertFalse(session.setSongOffset(20, forRow: "2"))
+        XCTAssertNil(session.nudgeSelectedSong(by: 0.5))
+        XCTAssertTrue(session.songOffsets.isEmpty)
+    }
+
+    func testAnOffsetBeyondTheLimitOrNotFiniteIsRefused() {
+        let session = perSongSession()
+        XCTAssertFalse(session.setSongOffset(601, forRow: "2"))
+        XCTAssertFalse(session.setSongOffset(.nan, forRow: "2"))
+        XCTAssertTrue(session.songOffsets.isEmpty)
+    }
+
+    func testNudgingMovesTheSelectedSongsOffset() {
+        let session = perSongSession()
+        tick(session, elapsed: 10, media: 50, program: base.addingTimeInterval(130))
+        XCTAssertEqual(session.nudgeSelectedSong(by: -0.5), -0.5, "from the stream skew 0")
+        tick(session, elapsed: 11, media: 51, program: base.addingTimeInterval(131))
+        XCTAssertEqual(session.nudgeSelectedSong(by: -0.5), -1.0)
+        XCTAssertEqual(session.songOffsets, ["2": -1.0])
+        XCTAssertEqual(session.appliedSkew, 0)
+    }
+
     // MARK: - The trace lines
 
     private func row(_ id: String, _ title: String, stampedAt offset: TimeInterval) -> OccurrenceInput {

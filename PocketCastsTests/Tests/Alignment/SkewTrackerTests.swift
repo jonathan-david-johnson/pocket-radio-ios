@@ -13,70 +13,183 @@ final class SkewTrackerTests: XCTestCase {
         func cancel() {}
     }
 
+    /// A stand-in for the live session's per-song offsets.
+    private final class Offsets {
+        var values: [String: Double] = [:]
+        var stream = 20.0
+        var refuse = false
+        var control: PerSongControl {
+            PerSongControl(effective: { [self] in $0.flatMap { values[$0] } ?? stream },
+                           set: { [self] value, key in
+                               if refuse { return false }
+                               values[key] = value
+                               return true
+                           })
+        }
+    }
+
     private let base = Date(timeIntervalSince1970: 1_700_000_000)
     private let generation = UUID()
+    private var defaults: UserDefaults!
+    private var store: AlignmentSkewStore!
 
-    private func match(_ title: String, position: Double, id: String) -> AnchorOutcome {
+    override func setUp() {
+        super.setUp()
+        defaults = UserDefaults(suiteName: "SkewTrackerTests")
+        defaults.removePersistentDomain(forName: "SkewTrackerTests")
+        store = AlignmentSkewStore(defaults: defaults, seed: { _ in 20 }, center: NotificationCenter())
+    }
+
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: "SkewTrackerTests")
+        super.tearDown()
+    }
+
+    private func match(_ title: String, position: Double, id: String = "A") -> AnchorOutcome {
         .matched(AnchorMatch(title: title, artist: "Artist", matchOffset: position - 5, predictedOffset: position, confidence: 1,
                              frequencySkew: 0, shazamID: id, isrc: "ISRC", candidates: [id]))
     }
 
-    /// A feed row stamped at `base`, and a program date `at` seconds after it.
+    /// The feed's row "Song" stamped at `base` with id `row-1`, and a program date `at` seconds after it.
     private func context(at: Double) -> HealContext {
         HealContext(generation: generation, stationId: "s", programDate: base.addingTimeInterval(at),
-                    candidates: [SkewCandidate(title: "Song", artist: "Artist", playedAt: base)], currentSkew: 20)
+                    candidates: [SkewCandidate(title: "Song", artist: "Artist", playedAt: base, rowKey: "row-1")], currentSkew: 20)
     }
 
-    func testItLogsAJumpBetweenTwoAnchorsOfOneSongAndNotASteadyOne() async {
-        var lines: [String] = []
-        let source = Scripted()
-        var clock = 200.0
-        let probe = ShazamAnchorProbe(source: source, context: { self.context(at: clock) }, emit: { lines.append($0) }, route: { "r" }, timeout: 5)
-        let tracker = SkewTracker(probe: { probe }, healerBusy: { false }, sessionActive: { true }, emit: { lines.append($0) }, sleep: { _ in })
+    private struct Rig {
+        let tracker: SkewTracker
+        let source: Scripted
+        let offsets: Offsets
+        let clock: Clock
+        var lines: Lines
+    }
+    private final class Clock { var at = 200.0 }
+    private final class Lines { var all: [String] = [] }
 
-        // Skew = program date - position - stamp. 200 - 30 - 0 = 170, then 210 - 40 = 170 (steady), then 220 - 41 = 179 (a jump of 9).
-        source.outcomes = [match("Song", position: 30, id: "A"), match("Song", position: 40, id: "A"), match("Song", position: 41, id: "B")]
-        for (time, _) in [(200.0, 0), (210.0, 1), (220.0, 2)] {
-            clock = time
-            await tracker.step()
-        }
-
-        let jumps = lines.filter { $0.hasPrefix("[track] jump") }
-        XCTAssertEqual(jumps.count, 1, "\(lines)")
-        guard let jump = jumps.first else { return }
-        XCTAssertTrue(jump.contains("+9.0 s (skew 170.0 -> 179.0)"), jump)
-        XCTAssertTrue(jump.contains("sid A -> B"), "it names the recordings, so a changed reference shows: \(jump)")
+    private func makeRig(station: String? = "s", busy: Bool = false) -> Rig {
+        let source = Scripted(), offsets = Offsets(), clock = Clock(), lines = Lines()
+        let probe = ShazamAnchorProbe(source: source, context: { self.context(at: clock.at) }, emit: { lines.all.append($0) },
+                                      route: { "r" }, timeout: 5)
+        let tracker = SkewTracker(probe: { probe }, healerBusy: { busy }, activeStation: { station }, perSong: { offsets.control },
+                                  store: store, emit: { lines.all.append($0) }, sleep: { _ in }, runsLoop: false)
+        return Rig(tracker: tracker, source: source, offsets: offsets, clock: clock, lines: lines)
     }
 
-    func testItDoesNotListenWhileAHealRunsOrWithoutAStation() async {
-        let source = Scripted()
-        source.outcomes = [match("Song", position: 30, id: "A")]
-        let probe = ShazamAnchorProbe(source: source, context: { self.context(at: 200) }, emit: { _ in }, route: { "r" }, timeout: 5)
-        var busy = true, active = true
-        let tracker = SkewTracker(probe: { probe }, healerBusy: { busy }, sessionActive: { active }, emit: { _ in }, sleep: { _ in })
-
-        await tracker.step()
-        XCTAssertEqual(source.calls, 0)
-        XCTAssertEqual(tracker.lastLine, "Heal running")
-        busy = false
-        active = false
-        await tracker.step()
-        XCTAssertEqual(source.calls, 0)
-        XCTAssertEqual(tracker.lastLine, "Waiting for a station")
-        active = true
-        await tracker.step()
-        XCTAssertEqual(source.calls, 1)
+    /// One anchor whose skew is `skew`: program date 200 minus the position minus the stamp (0).
+    private func anchor(_ rig: Rig, skew: Double) async -> TimeInterval {
+        rig.clock.at = 200
+        rig.source.outcomes = [match("Song", position: 200 - skew)]
+        return await rig.tracker.step()
     }
 
-    func testStartAndStopLogAndNeverChangeTheSkew() async {
-        var lines: [String] = []
-        let tracker = SkewTracker(probe: { ShazamAnchorProbe(source: Scripted(), context: { nil }, emit: { _ in }, route: { "r" }, timeout: 1) },
-                                  healerBusy: { false }, sessionActive: { false }, emit: { lines.append($0) }, sleep: { _ in })
-        tracker.start()
-        XCTAssertTrue(tracker.isOn)
-        tracker.stop()
-        XCTAssertFalse(tracker.isOn)
-        XCTAssertEqual(lines, ["[track] on", "[track] off"])
+    // MARK: Measure
+
+    func testMeasureLogsAJumpBetweenTwoAnchorsOfOneSongAndNeverChangesAnything() async {
+        let rig = makeRig()
+        rig.tracker.set(mode: .measure)
+        rig.tracker.set(mode: .measure)
+        _ = await anchor(rig, skew: 170)
+        _ = await anchor(rig, skew: 170)
+        rig.source.outcomes = [match("Song", position: 41, id: "B")]
+        rig.clock.at = 220
+        _ = await rig.tracker.step()
+
+        let jumps = rig.lines.all.filter { $0.hasPrefix("[track] jump") }
+        XCTAssertEqual(jumps.count, 1, "\(rig.lines.all)")
+        XCTAssertTrue(jumps.first?.contains("+9.0 s (skew 170.0 -> 179.0)") ?? false, "\(jumps)")
+        XCTAssertTrue(jumps.first?.contains("sid A -> B") ?? false, "it names the recordings: \(jumps)")
+        XCTAssertTrue(rig.offsets.values.isEmpty, "measure mode changes nothing")
+        rig.tracker.set(mode: .off)
+    }
+
+    // MARK: Apply
+
+    func testANewSongsFirstBigChangeWaitsForASecondAnchorThatAgrees() async {
+        let rig = makeRig()
+        rig.tracker.set(mode: .apply)
+        let first = await anchor(rig, skew: -31)           // the stream default is 20: 51 s away
+        XCTAssertTrue(rig.offsets.values.isEmpty, "one anchor of a big change is not believed")
+        XCTAssertEqual(first, SkewTracker.confirmGap, "the second anchor is asked for soon")
+        XCTAssertTrue(rig.lines.all.contains { $0.contains("waiting for a second anchor") })
+
+        let second = await anchor(rig, skew: -30.8)
+        XCTAssertEqual(rig.offsets.values["row-1"] ?? 0, -30.9, accuracy: 0.11, "the two anchors' mean")
+        XCTAssertEqual(store.skew(for: "s"), -30.9, accuracy: 0.11, "the stream default follows, for the next song")
+        XCTAssertEqual(second, SkewTracker.gap)
+        XCTAssertTrue(rig.lines.all.contains { $0.hasPrefix("[auto] Song skew 20.0 ->") }, "\(rig.lines.all)")
+        rig.tracker.set(mode: .off)
+    }
+
+    func testAWrongSectionAnchorNeverSetsAnOffsetAlone() async {
+        let rig = makeRig()
+        rig.tracker.set(mode: .apply)
+        let wrong = await anchor(rig, skew: 140)       // a wrong section, 120 s from the default
+        XCTAssertEqual(wrong, SkewTracker.confirmGap)
+        _ = await anchor(rig, skew: 19.8)              // the next anchor is back at the default: nothing to change
+        XCTAssertTrue(rig.offsets.values.isEmpty, "the wrong anchor never became an offset, and the default needed none")
+        XCTAssertEqual(store.skew(for: "s"), 20)
+        rig.tracker.set(mode: .off)
+    }
+
+    func testASmallChangeIsBelievedAtOnceAndASteadySongIsListenedToLess() async {
+        let rig = makeRig()
+        rig.tracker.set(mode: .apply)
+        rig.offsets.values["row-1"] = 16.4
+        let drift = await anchor(rig, skew: 15.8)                   // 0.6 s: a drifting song, above the 0.5 s deadband
+        XCTAssertEqual(rig.offsets.values["row-1"] ?? 0, 15.8, accuracy: 0.001)
+        XCTAssertEqual(drift, SkewTracker.gap)
+
+        _ = await anchor(rig, skew: 15.9)                           // 0.1 s: steady
+        let steady = await anchor(rig, skew: 15.8)                  // steady twice in a row
+        XCTAssertEqual(steady, SkewTracker.steadyGap)
+        XCTAssertEqual(rig.offsets.values["row-1"] ?? 0, 15.8, accuracy: 0.001, "a steady song is left alone")
+        rig.tracker.set(mode: .off)
+    }
+
+    func testMeasureModeNeverApplies() async {
+        let rig = makeRig()
+        rig.tracker.set(mode: .measure)
+        _ = await anchor(rig, skew: 19)
+        _ = await anchor(rig, skew: 19)
+        XCTAssertTrue(rig.offsets.values.isEmpty)
+        rig.tracker.set(mode: .off)
+    }
+
+    func testAnOffsetTheSessionRefusesIsNotAppliedToTheStreamDefault() async {
+        let rig = makeRig()
+        rig.offsets.refuse = true
+        rig.tracker.set(mode: .apply)
+        _ = await anchor(rig, skew: 22)
+        XCTAssertEqual(store.skew(for: "s"), 20, "the default moves only when the song's offset was accepted")
+        rig.tracker.set(mode: .off)
+    }
+
+    // MARK: Waiting
+
+    func testItWaitsForAStationAndForAHealAndRetriesAMissingSongSoon() async {
+        var rig = makeRig(station: nil)
+        let none = await rig.tracker.step()
+        XCTAssertEqual(none, SkewTracker.gap)
+        XCTAssertEqual(rig.tracker.lastLine, "Waiting for a station")
+        XCTAssertEqual(rig.source.calls, 0)
+
+        rig = makeRig(busy: true)
+        _ = await rig.tracker.step()
+        XCTAssertEqual(rig.tracker.lastLine, "Heal running")
+        XCTAssertEqual(rig.source.calls, 0)
+
+        rig = makeRig()
+        rig.source.outcomes = [match("Not Listed", position: 30)]
+        let missing = await rig.tracker.step()
+        XCTAssertEqual(missing, SkewTracker.feedGap, "a song the feed has not listed yet is tried again sooner")
+    }
+
+    func testTheModeLogsWhenItStartsAndStops() {
+        let rig = makeRig()
+        rig.tracker.set(mode: .apply)
+        XCTAssertEqual(rig.tracker.mode, .apply)
+        rig.tracker.set(mode: .off)
+        XCTAssertEqual(rig.lines.all, ["[track] on mode=apply", "[track] off"])
     }
 
     func testTheAnchorLineNamesTheRecording() {

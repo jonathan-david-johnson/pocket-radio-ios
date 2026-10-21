@@ -18,6 +18,10 @@ struct AlignmentProfile {
 
     /// The skew is saved under this key, so every list entry for the same stream shares one skew.
     let key: String
+    /// True when the feed's stamps differ from the stream by a different amount for each song (KEXP's DJs log plays by
+    /// hand: skews of −31, 16, 19 and 3 s on consecutive songs). A heal then sets that song's own offset, and the stream
+    /// skew is only the default for a song nobody has measured. False when one skew fits the stream (KCRW's stamps).
+    let perSongOffsets: Bool
     let clock: Clock
     /// Where the skew starts for a station that was never healed or nudged.
     let seedSkew: Double
@@ -33,6 +37,7 @@ struct AlignmentProfile {
 enum AlignmentProfiles {
     static let kcrw = AlignmentProfile(
         key: "kcrw-e24",
+        perSongOffsets: false,
         clock: .programDate,
         seedSkew: KCRWAlignmentConfiguration.seedSkew,
         streamOverride: KCRWAlignmentConfiguration.measuredEndpoint,
@@ -44,6 +49,7 @@ enum AlignmentProfiles {
 
     static let kexp = AlignmentProfile(
         key: "kexp",
+        perSongOffsets: true,
         clock: .mediaTime,
         seedSkew: 0,
         streamOverride: nil,

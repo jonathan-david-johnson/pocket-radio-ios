@@ -52,7 +52,7 @@ struct SimulatedFeed {
     func rows(at p: Double, limit: Int = 10) -> [SkewCandidate] {
         songs.filter { $0.stamp + publishDelay <= p + Self.liveLead }.suffix(limit).map {
             SkewCandidate(title: listedAsEdit ? "\($0.title) (radio edit)" : $0.title, artist: $0.artist,
-                          playedAt: Date(timeIntervalSince1970: $0.stamp))
+                          playedAt: Date(timeIntervalSince1970: $0.stamp), rowKey: "row-\(Int($0.stamp))")
         }
     }
 }

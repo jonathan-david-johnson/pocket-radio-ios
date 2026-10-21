@@ -348,7 +348,25 @@ struct SkewAdjuster {
     /// Adds the delta and returns the new skew.
     let nudge: (String, TimeInterval) -> TimeInterval
 
+    /// A station whose session keeps per-song offsets reads and moves the selected song's offset. Any other station reads
+    /// and moves its stream skew.
     static let production = SkewAdjuster(
-        current: { AlignmentSkewStore.shared.skew(for: $0) },
-        nudge: { AlignmentSkewStore.shared.nudge(by: $1, for: $0) })
+        current: { stationId in
+            MainActor.assumeIsolated {
+                if let session = RadioPlaybackSession.active, session.stationId == stationId, !session.isStopped,
+                   session.profile.perSongOffsets {
+                    return session.selectedSongSkew
+                }
+                return AlignmentSkewStore.shared.skew(for: stationId)
+            }
+        },
+        nudge: { stationId, delta in
+            MainActor.assumeIsolated {
+                if let session = RadioPlaybackSession.active, session.stationId == stationId, !session.isStopped,
+                   let value = session.nudgeSelectedSong(by: delta) {
+                    return value
+                }
+                return AlignmentSkewStore.shared.nudge(by: delta, for: stationId)
+            }
+        })
 }

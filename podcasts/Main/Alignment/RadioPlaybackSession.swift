@@ -62,6 +62,12 @@ final class RadioPlaybackSession {
     /// advances. A new play is a new item and takes a new anchor.
     private var mediaAnchor: Date?
     private var traceDelegate: StreamTraceDelegate?
+    /// The feed's rows as the feed sent them, before any per-song offset moved a stamp.
+    private(set) var rawFeedRows: [OccurrenceInput] = []
+    /// Per-song offsets (profiles with `perSongOffsets`): the skew measured for one song, by the feed's row id. In memory
+    /// only. The audio of a new play starts with a new delay, so a restart measures again.
+    private(set) var songOffsets: [String: Double] = [:]
+    private var lastReceivedElapsed: TimeInterval = 0
     /// Rows already seen in the feed, so a `[trace] feed` line is written once per new row.
     private var tracedRows: Set<String> = []
     private var tracedFirstPoll = false
@@ -313,6 +319,63 @@ final class RadioPlaybackSession {
                                                               maxSelectedAge: frozen.maxSelectedAge,
                                                               maxFeedSilence: frozen.maxFeedSilence))
         emit("[align] skew \(String(format: "%.1f", skew)) s\(first ? " (session start)" : "")")
+        // Every row that has its own offset is stamped relative to the stream skew, so a new skew moves those stamps too.
+        if !first { reingestFeed() }
+    }
+
+    // MARK: - Per-song offsets
+
+    /// The skew for one song: its own offset if one was measured, else the stream skew.
+    func effectiveSkew(forRow key: String?) -> Double {
+        if let key, let own = songOffsets[key] { return own }
+        return appliedSkew ?? profile.seedSkew
+    }
+
+    /// The offset of the song the session has selected now, or the stream skew when none is selected.
+    var selectedSongSkew: Double {
+        effectiveSkew(forRow: snapshot.selectedOccurrence?.providerID)
+    }
+
+    /// Records the skew measured for the song in `key`. Only profiles with per-song offsets keep them. The feed is taken in
+    /// again with that row's stamp moved, so the song's selection, position and lyrics follow at once.
+    @discardableResult
+    func setSongOffset(_ value: Double, forRow key: String) -> Bool {
+        guard profile.perSongOffsets, !isStopped, value.isFinite, abs(value) <= AlignmentSkewStore.limit else { return false }
+        songOffsets[key] = (value * 10).rounded() / 10
+        reingestFeed()
+        tick()
+        return true
+    }
+
+    /// Moves the selected song's offset by `delta`. Returns the new offset, or nil when nothing is selected or the profile
+    /// has no per-song offsets.
+    @discardableResult
+    func nudgeSelectedSong(by delta: Double) -> Double? {
+        guard profile.perSongOffsets, let key = snapshot.selectedOccurrence?.providerID else { return nil }
+        let value = selectedSongSkew + delta
+        return setSongOffset(value, forRow: key) ? songOffsets[key] : nil
+    }
+
+    /// The rows with each per-song offset applied to its stamp: the selector reads `stamp + stream skew`, so a stamp moved by
+    /// `own − stream skew` puts the song's start at `stamp + own`.
+    private func restamped(_ entries: [OccurrenceInput]) -> [OccurrenceInput] {
+        guard profile.perSongOffsets, !songOffsets.isEmpty else { return entries }
+        let stream = appliedSkew ?? profile.seedSkew
+        return entries.map { row in
+            guard let id = row.providerID, let own = songOffsets[id], let stamp = row.playedAt else { return row }
+            return OccurrenceInput(station: row.station, providerID: row.providerID, kind: row.kind, title: row.title,
+                                   artist: row.artist, album: row.album, artworkURL: row.artworkURL,
+                                   playedAt: stamp.addingTimeInterval(own - stream))
+        }
+    }
+
+    /// Feeds the last rows to the core again with the current offsets, without a network request.
+    private func reingestFeed() {
+        guard profile.perSongOffsets, !rawFeedRows.isEmpty, !isStopped else { return }
+        requestID += 1
+        lastReceivedElapsed = max(lastReceivedElapsed, elapsedNow)
+        _ = try? state.receiveFeed(requestID: requestID, requestedElapsedSeconds: lastReceivedElapsed,
+                                   receivedElapsedSeconds: lastReceivedElapsed, entries: restamped(rawFeedRows))
     }
 
     /// A nudge or a heal changed this station's skew. Reads it and takes a sample now, so the title and the lyric
@@ -497,10 +560,12 @@ final class RadioPlaybackSession {
                                             receivedElapsedSeconds: receivedElapsed,
                                             reason: failure)
             } else {
+                rawFeedRows = result.entries
+                lastReceivedElapsed = max(lastReceivedElapsed, receivedElapsed)
                 update = try state.receiveFeed(requestID: requestID,
                                                requestedElapsedSeconds: requestedElapsed,
                                                receivedElapsedSeconds: receivedElapsed,
-                                               entries: result.entries)
+                                               entries: restamped(result.entries))
                 latestFeedTop = result.entries.first.map { Self.describe($0) }
             }
             switch update.update {

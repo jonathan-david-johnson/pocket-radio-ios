@@ -175,8 +175,12 @@ struct AlignmentObserveView: View {
                     Text("Start KCRW or KEXP with alignment On to see its skew.").font(.footnote)
                 }
                 Text(healer.lastResult).font(.footnote)
-                Toggle("Track every 30 s (measure only)", isOn: Binding(get: { tracker.isOn },
-                                                                         set: { $0 ? tracker.start() : tracker.stop() }))
+                Picker("Auto anchor", selection: Binding(get: { tracker.mode }, set: { tracker.set(mode: $0) })) {
+                    Text("Off").tag(SkewTracker.Mode.off)
+                    Text("Measure").tag(SkewTracker.Mode.measure)
+                    Text("Apply").tag(SkewTracker.Mode.apply)
+                }
+                .pickerStyle(.segmented)
                 Text(tracker.lastLine).font(.footnote)
                 Button(anchors.isListening ? "Listening…" : "Heal now") { Task { await healer.heal { _ in } } }
                     .disabled(healer.isRunning)
