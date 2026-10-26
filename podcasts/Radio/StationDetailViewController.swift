@@ -2,8 +2,11 @@ import SwiftUI
 import UIKit
 
 class StationDetailViewController: SimpleNotificationsViewController {
+    typealias FavoriteLookup = (String) async throws -> Bool
+
     private let station: RadioStation
     private let lyricSync: LyricSyncController
+    private let favoriteLookup: FavoriteLookup
 
     private let logoView: UIImageView = {
         let iv = UIImageView()
@@ -158,8 +161,10 @@ class StationDetailViewController: SimpleNotificationsViewController {
         return btn
     }()
 
-    init(station: RadioStation, lyricSync: LyricSyncController? = nil) {
+    init(station: RadioStation, lyricSync: LyricSyncController? = nil,
+         favoriteLookup: @escaping FavoriteLookup = { try await RadioFavoritesManager.shared.isFavorite(stationId: $0) }) {
         self.station = station
+        self.favoriteLookup = favoriteLookup
         self.lyricSync = lyricSync ?? LyricSyncController(
             stationId: station.stationId,
             stationDisplayTitle: station.displayableTitle()
@@ -259,6 +264,7 @@ class StationDetailViewController: SimpleNotificationsViewController {
 
     deinit {
         MainActor.assumeIsolated {
+            favoriteLoadTask?.cancel()
             pendingTracklistTask?.cancel()
             pendingTracklistTask = nil
             // The shared clock can outlive the screen when it was left with full-screen lyrics open.
@@ -616,11 +622,13 @@ class StationDetailViewController: SimpleNotificationsViewController {
     }
 
     private func loadFavoriteState() {
+        let stationId = station.stationId
+        let lookup = favoriteLookup
         favoriteLoadTask = Task { [weak self] in
-            guard let self else { return }
-            let faved = (try? await RadioFavoritesManager.shared.isFavorite(stationId: station.stationId)) ?? false
+            // A slow lookup must not keep the screen and its lyric timer alive after navigation releases it.
+            let faved = (try? await lookup(stationId)) ?? false
             guard !Task.isCancelled else { return }
-            await MainActor.run { self.setFavoriteUI(faved) }
+            await MainActor.run { self?.setFavoriteUI(faved) }
         }
     }
 
@@ -665,7 +673,6 @@ class StationDetailViewController: SimpleNotificationsViewController {
             lyricHeaderSeparator.heightAnchor.constraint(equalToConstant: 0.5)
         ])
     }
-
 }
 
 // MARK: - UITableViewDataSource

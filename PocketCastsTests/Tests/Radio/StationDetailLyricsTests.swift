@@ -113,7 +113,9 @@ final class StationDetailLyricsTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 200_000_000)
     }
 
-    private func makeDetail(_ stationId: String) -> (vc: StationDetailViewController, lyrics: LyricSyncController) {
+    private func makeDetail(_ stationId: String,
+                            favoriteLookup: @escaping StationDetailViewController.FavoriteLookup = { _ in false })
+        -> (vc: StationDetailViewController, lyrics: LyricSyncController) {
         let lyrics = LyricSyncController(
             stationId: stationId, stationDisplayTitle: "KCRW",
             loader: { [loader] artist, title, album in await loader.load(artist: artist, title: title, album: album) },
@@ -121,7 +123,7 @@ final class StationDetailLyricsTests: XCTestCase {
             scheduleTicks: { [ticks] in ticks.schedule($0) },
             skew: skews.adjuster)
         let station = RadioStation(stationId: stationId, name: "KCRW", streamUrl: "https://example.test/stream")
-        let vc = StationDetailViewController(station: station, lyricSync: lyrics)
+        let vc = StationDetailViewController(station: station, lyricSync: lyrics, favoriteLookup: favoriteLookup)
         let nav = UINavigationController(rootViewController: vc)
         nav.loadViewIfNeeded()
         vc.loadViewIfNeeded()
@@ -256,18 +258,63 @@ final class StationDetailLyricsTests: XCTestCase {
     }
 
     func testStationDetailDeallocationStopsTheClock() async {
+        seedFeed(applying, [entry("Song A", at: 100)])
         publishSong("Song A", occ: "occ-1", at: 100)
         let lyrics: LyricSyncController
+        weak var detail: StationDetailViewController?
+        weak var navigation: UINavigationController?
         do {
             let made = makeDetail(applying)
+            detail = made.vc
+            navigation = made.vc.navigationController
             lyrics = made.lyrics
             await lyrics.waitForFetch()
             XCTAssertTrue(ticks.isRunning)
             made.vc._selectRowForTesting(0)
+            XCTAssertTrue(made.vc.navigationController?.topViewController is LyricsViewController)
             navs.removeAll()
         }
         for _ in 0..<10 { await Task.yield() }
+        XCTAssertNil(navigation, "the test must release the navigation container")
+        XCTAssertNil(detail, "the detail controller must be released before checking deinit cleanup")
         XCTAssertFalse(ticks.isRunning, "a screen that goes away while full-screen lyrics was open must not leak the timer")
+    }
+
+    func testPendingFavoriteLookupDoesNotKeepStationDetailAlive() async {
+        publishSong("Song A", occ: "occ-1", at: 100)
+        let started = expectation(description: "favorite lookup suspended")
+        let completed = expectation(description: "favorite lookup completed after release")
+        var pendingFavorite: CheckedContinuation<Bool, Never>?
+        defer { pendingFavorite?.resume(returning: false) }
+        weak var detail: StationDetailViewController?
+        weak var navigation: UINavigationController?
+        let lyrics: LyricSyncController
+        do {
+            let made = makeDetail(applying, favoriteLookup: { _ in
+                let result = await withCheckedContinuation { continuation in
+                    pendingFavorite = continuation
+                    started.fulfill()
+                }
+                XCTAssertTrue(Task.isCancelled, "releasing the screen cancels its favorites task")
+                completed.fulfill()
+                return result
+            })
+            detail = made.vc
+            navigation = made.vc.navigationController
+            lyrics = made.lyrics
+            await lyrics.waitForFetch()
+            await fulfillment(of: [started], timeout: 1)
+            XCTAssertTrue(ticks.isRunning)
+            navs.removeAll()
+        }
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertNil(navigation)
+        XCTAssertNil(detail, "a suspended favorites request must not retain the screen")
+        XCTAssertFalse(ticks.isRunning)
+        XCTAssertNil(lyrics.currentOccurrenceID)
+        pendingFavorite?.resume(returning: false)
+        pendingFavorite = nil
+        await fulfillment(of: [completed], timeout: 1)
     }
 
     func testOffAndObserveStillStopOnDisappear() async {
