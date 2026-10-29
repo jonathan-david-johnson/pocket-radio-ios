@@ -52,6 +52,13 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
     #if !os(watchOS) && !APPCLIP && !os(tvOS)
     private var radioMetadataObserver: RadioMetadataObserver?
     private var alignmentSession: RadioPlaybackSession?
+    #if DEBUG
+    private var mediaStallDiagnostics: MediaStallDiagnostics?
+    /// Replaces the aligned KCRW item when its segment loader stops (ADR 0011), with what a replacement needs.
+    private var kcrwLoaderRecovery: KCRWLoaderRecovery?
+    private var kcrwRecoveryEpisode: BaseEpisode?
+    private var kcrwRecoveryProfile: AlignmentProfile?
+    #endif
     #endif
 
     private var episodeUuid: String?
@@ -98,6 +105,10 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
         alignmentSession = nil
         #endif
 
+        #if DEBUG && !os(watchOS) && !APPCLIP && !os(tvOS)
+        mediaStallDiagnostics?.snapshot(trigger: "replace")
+        mediaStallDiagnostics = nil
+        #endif
         if player != nil {
             cleanupPlayer()
             player = nil
@@ -139,6 +150,17 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
             if let endpoint {
                 alignmentSession = RadioPlaybackSession.startOnMain(player: player, item: playerItem, endpoint: endpoint,
                                                                     stationId: episode.uuid, profile: profile)
+                #if DEBUG
+                if profile.key == AlignmentProfiles.kcrw.key, Thread.isMainThread, let session = alignmentSession {
+                    let generation = MainActor.assumeIsolated { AlignmentProbeLog.shortID(session.generation) }
+                    mediaStallDiagnostics = MediaStallDiagnostics(item: playerItem, player: player, generation: generation)
+                    kcrwRecoveryEpisode = episode
+                    kcrwRecoveryProfile = profile
+                    let recovery = KCRWLoaderRecovery { [weak self] in self?.replaceAlignedKCRWItem() ?? false }
+                    recovery.attach(to: player)
+                    kcrwLoaderRecovery = recovery
+                }
+                #endif
             }
         }
 
@@ -282,6 +304,9 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
 
     func seekTo(_ time: TimeInterval, completion: (() -> Void)?) {
         let adjustedTime = fmax(0.1, time)
+        #if DEBUG && !os(watchOS) && !APPCLIP && !os(tvOS)
+        mediaStallDiagnostics?.seek(target: adjustedTime, origin: "seekTo")
+        #endif
 
         let timeToSeekTo = CMTimeMake(value: Int64(adjustedTime * 100), timescale: 100)
         let tolerance = CMTime.zero // in testing setting this to 1 second wasn't honoured and it would sometimes be 10 seconds out. So go for accuracy over seek speed here
@@ -390,6 +415,9 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
         guard let player, player.currentItem?.status == .failed  || player.status == .failed else {
             return false
         }
+        #if DEBUG && !os(watchOS) && !APPCLIP && !os(tvOS)
+        mediaStallDiagnostics?.snapshot(trigger: "statusFailed")
+        #endif
         let playerErrorMessage =  (player.error as? NSError)?.debugDescription ?? ""
         let playerItemErrorMessage = (player.currentItem?.error as? NSError)?.debugDescription ?? ""
         FileLog.shared.addMessage("[DefaultPlayer] Playback did fail with error: \(playerErrorMessage) | \(playerItemErrorMessage)")
@@ -845,6 +873,9 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
         // there's a bug that when playing over AirPlay to a HomePod, seeking in stream that's already where you are up to sometimes doesn't work, this is a weird workaround for that case
         // https://github.com/shiftyjelly/pocketcasts-ios/issues/1936 is worth a read if you ever come here thinking you want to change this code
         if round(startingTime) != round(currentTime()) {
+            #if DEBUG && !os(watchOS) && !APPCLIP && !os(tvOS)
+            mediaStallDiagnostics?.seek(target: startingTime, origin: "jumpToStartingPosition")
+            #endif
             seekTo(startingTime, completion: nil)
         }
 
@@ -1026,6 +1057,11 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
             self.shouldKeepPlaying = false
 
             let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
+            #if DEBUG && !os(watchOS) && !APPCLIP && !os(tvOS)
+            if let item = notification.object as? AVPlayerItem, item === self.player?.currentItem {
+                self.mediaStallDiagnostics?.snapshot(trigger: "failedToEnd", error: error)
+            }
+            #endif
             let errorMessage = error?.localizedDescription ?? "Unknown item did fail to finish error"
             if let nsError = error as? NSError, nsError.isOutOfStorage {
                 PlaybackManager.shared.playbackDidFail(error: .notEnoughStorage(logMessage: errorMessage))
@@ -1034,8 +1070,13 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
             }
         }
 
-        playStalledObserver = nc.addObserver(forName: NSNotification.Name.AVPlayerItemPlaybackStalled, object: nil, queue: nil) { [weak self] _ in
+        playStalledObserver = nc.addObserver(forName: NSNotification.Name.AVPlayerItemPlaybackStalled, object: nil, queue: nil) { [weak self] notification in
             guard let self else { return }
+            #if DEBUG && !os(watchOS) && !APPCLIP && !os(tvOS)
+            if let item = notification.object as? AVPlayerItem, item === self.player?.currentItem {
+                self.mediaStallDiagnostics?.snapshot(trigger: "stall")
+            }
+            #endif
             FileLog.shared.addMessage("Received notification of playback stall\(self.stallBufferDescription())")
             guard self.shouldKeepPlaying else { return }
 
@@ -1072,7 +1113,58 @@ class DefaultPlayer: PlaybackProtocol, Hashable {
             + "preferredForwardBuffer \(item.preferredForwardBufferDuration) s)"
     }
 
+    #if DEBUG && !os(watchOS) && !APPCLIP && !os(tvOS)
+    /// Gives the same player a fresh item for the aligned KCRW station, which opens a new listening session (ADR 0011).
+    ///
+    /// Runs synchronously on the main thread, so a pause, stop or station change can't interleave with it. The audio
+    /// session is already active, so this doesn't go through `PlaybackManager.play`. Returns false, changing nothing,
+    /// if the player is no longer meant to be playing this station.
+    private func replaceAlignedKCRWItem() -> Bool {
+        guard Thread.isMainThread, shouldKeepPlaying, let player, player.currentItem != nil,
+              let episode = kcrwRecoveryEpisode, episode.uuid == episodeUuid, let profile = kcrwRecoveryProfile,
+              let endpoint = profile.streamOverride,
+              let item = PlaybackItem(episode: episode).createPlayerItem() else { return false }
+
+        mediaStallDiagnostics?.snapshot(trigger: "reconnect")
+        mediaStallDiagnostics = nil
+        if let old = alignmentSession { MainActor.assumeIsolated { old.stop(reason: "reconnect") } }
+        alignmentSession = nil
+
+        item.audioTimePitchAlgorithm = .timeDomain
+        player.replaceCurrentItem(with: item)
+        // The same item observers configurePlayer installs; they are bound to the item, not the player.
+        durationObserver = item.observe(\.duration) { _, _ in
+            PlaybackManager.shared.playerDidCalculateDuration()
+        }
+        playerItemStatusObserver = item.observe(\.status) { [weak self] _, _ in
+            self?.playerStatusDidChange()
+        }
+        if let tracker = cellularTracker {
+            tracker.stopTracking()
+            tracker.startTracking(playerItem: item, episodeUuid: episode.uuid, podcastUuid: episode.parentIdentifier())
+        }
+
+        alignmentSession = RadioPlaybackSession.startOnMain(player: player, item: item, endpoint: endpoint,
+                                                            stationId: episode.uuid, profile: profile)
+        if let session = alignmentSession {
+            let generation = MainActor.assumeIsolated { AlignmentProbeLog.shortID(session.generation) }
+            mediaStallDiagnostics = MediaStallDiagnostics(item: item, player: player, generation: generation)
+        }
+        // Re-apply the rate without seeking: a live stream has no position to return to (ADR 0007).
+        performSetPlaybackRate()
+        return true
+    }
+    #endif
+
     private func cleanupPlayer() {
+        #if DEBUG && !os(watchOS) && !APPCLIP && !os(tvOS)
+        mediaStallDiagnostics?.snapshot(trigger: "cleanup")
+        mediaStallDiagnostics = nil
+        kcrwLoaderRecovery?.invalidate()
+        kcrwLoaderRecovery = nil
+        kcrwRecoveryEpisode = nil
+        kcrwRecoveryProfile = nil
+        #endif
         player?.currentItem?.audioMix = nil
         durationObserver = nil
         rateObserver = nil
